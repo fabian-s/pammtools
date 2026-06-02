@@ -129,10 +129,14 @@
 <code><a href="../reference/add_counterfactual_transitions.html">add_counterfactual_transitions()</a></code> now fully honors <code>from_col</code>, <code>to_col</code>, and <code>transition_col</code>.</li>
 <li>
 <code>get_trans_prob()</code> now supports non-integer (categorical) state labels (e.g. <code>"healthy-&gt;ill"</code>) in addition to integer-coded transitions.</li>
+<li>
+<code><a href="../reference/gg_smooth.html">gg_smooth()</a></code> / <code><a href="../reference/get_terms.html">get_terms()</a></code> now select smooth terms via the model’s <code>mgcv</code> smooth metadata instead of unanchored <code><a href="https://rdrr.io/r/base/grep.html" class="external-link">grep()</a></code>, fixing two errors reported in <a href="https://github.com/adibender/pammtools/issues/283" class="external-link">#283</a>: passing a variable name matched by several smooths (e.g. <code>terms = "tend"</code> in a time-varying-effects model) no longer fails with <code>`eff` must be size 100 or 1</code>, and factor terms no longer trigger <code>'range' not meaningful for factors</code>. Names that match no smooth (e.g. parametric factor effects) are now skipped with a warning rather than erroring.</li>
 </ul></div>
 <div class="section level3">
 <h3 id="enhancements-0-7-6">Enhancements<a class="anchor" aria-label="anchor" href="#enhancements-0-7-6"></a></h3>
-<ul><li>Transition probability calculation is faster due to a base R refactor (previously used dplyr internally).</li>
+<ul><li>
+<code><a href="../reference/gg_smooth.html">gg_smooth()</a></code> is now fully general across univariate smooth terms: a bare variable name selects every 1d smooth over that variable (main effect plus any <code>by</code>-variable or factor-smooth interaction term), <code>terms</code> is optional (defaulting to all univariate smooths), and 1d <code><a href="https://rdrr.io/pkg/mgcv/man/te.html" class="external-link">ti()</a></code> as well as factor-smooth interactions (<code>bs = "fs"</code>, <code>bs = "sz"</code>) are supported. Factor-indexed smooths are drawn in a single facet with one coloured/filled curve per factor level, identified by a new <code>level</code> column in the <code><a href="../reference/get_terms.html">get_terms()</a></code> output. Random-effect smooths (<code>bs = "re"</code>, <code>bs = "mrf"</code>) and multivariate/tensor smooths are excluded (use <code><a href="../reference/gg_re.html">gg_re()</a></code> / <code><a href="../reference/gg_tensor.html">gg_tensor()</a></code>).</li>
+<li>Transition probability calculation is faster due to a base R refactor (previously used dplyr internally).</li>
 <li>
 <code><a href="../reference/gg_state_occupation.html">gg_state_occupation()</a></code> is now exported. Dead parameters <code>group_labels</code> and <code>nrow</code> have been removed; user-supplied <code>ncol</code> is now respected.</li>
 </ul></div>

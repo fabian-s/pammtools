@@ -59,10 +59,12 @@
 <url><loc>https://adibender.github.io/pammtools/reference/get_plotinfo.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/get_sim_ci.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/get_sim_cumu.html</loc></url>
+<url><loc>https://adibender.github.io/pammtools/reference/get_smooth_terms.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/get_surv_prob.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/get_tdc_form.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/get_tdc_vars.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/get_term.html</loc></url>
+<url><loc>https://adibender.github.io/pammtools/reference/get_term_legacy.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/get_terms.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/gg_fixed.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/gg_laglead.html</loc></url>
@@ -83,6 +85,7 @@
 <url><loc>https://adibender.github.io/pammtools/reference/nuclear.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/pamm.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/pammtools.html</loc></url>
+<url><loc>https://adibender.github.io/pammtools/reference/parse_by_level.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/patient.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/ped_info.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/pipe.html</loc></url>
@@ -90,6 +93,7 @@
 <url><loc>https://adibender.github.io/pammtools/reference/prep_concurrent.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/reconstruct_cutpoints.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/reconstruct_intlen.html</loc></url>
+<url><loc>https://adibender.github.io/pammtools/reference/resolve_terms.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/rpexp.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/sample_info.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/seq_range.html</loc></url>
@@ -97,6 +101,7 @@
 <url><loc>https://adibender.github.io/pammtools/reference/sim_pexp_cr.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/simdf_elra.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/smooth.construct.fdl.smooth.spec.html</loc></url>
+<url><loc>https://adibender.github.io/pammtools/reference/smooth_term_rows.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/specials.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/split_data.html</loc></url>
 <url><loc>https://adibender.github.io/pammtools/reference/split_data_multistate.html</loc></url>
