@@ -82,10 +82,22 @@ fit <- pamm_ic(
 fit
 ```
 
-Each element of `fit$fits` is an ordinary `pamm` object, but the pooled
-`add_*()` methods do the right thing automatically: they combine the
-per-imputation posterior draws so the intervals reflect both within- and
-between-imputation uncertainty.
+`print()` and `summary()` report the **pooled** fit: coefficients and
+covariances are combined with Rubin's rules (so the reported standard errors
+include the between-imputation variability), term p-values use the median-p
+rule [@bolt2022], and `summary()` additionally reports the fraction of
+missing information induced by the interval censoring.
+
+```{r}
+summary(fit)
+```
+
+The `m` imputation fits are stored in `fit$fits` in a slimmed form (the
+per-observation slots are dropped, so memory does not grow with the data set
+size), and the pooled fit lives in `fit$pooled`. The pooled `add_*()` methods
+below operate on the imputation fits directly: they combine the per-imputation
+posterior draws so the intervals reflect both within- and between-imputation
+uncertainty.
 
 ```{r}
 ped <- as_ped(icd, Surv(L, R, type = "interval2") ~ x, cut = seq(0, 10, by = 0.5))

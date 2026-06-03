@@ -11,7 +11,11 @@
   `add_cif()` gain `pamm_ic` methods that combine per-imputation posterior draws
   (within- plus between-imputation variance). `add_inspections()` turns exact
   simulated times (e.g. from `sim_pexp()`) into interval-censored panel data for
-  testing and coverage studies.
+  testing and coverage studies. `print()`/`summary()` of a `pamm_ic` report the
+  *pooled* fit (Rubin-combined coefficients and covariances, median-p term
+  tests, fraction-of-missing-information diagnostic); the object exposes a
+  `pooled` entry and stores the per-imputation fits in slimmed form so memory
+  does not scale with the number of imputations.
 
 ## Bug fixes
 * `add_trans_prob()` and `add_trans_ci()` no longer require the input data to

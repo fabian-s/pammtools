@@ -36,12 +36,25 @@
 #' @param engine Estimation engine passed to \code{\link{pamm}} (\code{"gam"} or
 #'   \code{"bam"}).
 #' @param ... Further arguments passed to \code{\link{pamm}} / \code{mgcv}.
-#' @return An object of class \code{pamm_ic}: a list with the \code{m} pooled
-#'   \code{pamm} fits (\code{fits}), the initialiser fit (\code{init_fit}), the
-#'   parsed interval bounds (\code{ic}), the shared \code{cut}, and metadata. Each
-#'   element of \code{fits} is an ordinary \code{pamm} object, so any single
-#'   \code{add_*} call works on it directly.
-#' @seealso \code{\link{impute_ic_times}}, \code{\link{add_surv_prob}}
+#' @return An object of class \code{pamm_ic}: a list with
+#'   \describe{
+#'     \item{\code{fits}}{the \code{m} imputation fits, each \emph{slimmed} (via
+#'       \code{\link{strip_pamm_fit}}) to drop per-observation slots so memory
+#'       does not scale with the number of imputations; they still support
+#'       \code{coef}, \code{vcov} and \code{predict(type = "lpmatrix")}, which is
+#'       all the pooled \code{add_*} methods need.}
+#'     \item{\code{pooled}}{the pooled fit: Rubin-combined \code{coefficients},
+#'       \code{Vp}/\code{Ve} (within- plus between-imputation variance), pooled
+#'       parametric/smooth tables with median-p values, MI diagnostics
+#'       (\code{riv}, \code{fmi}), and a \code{gam}-like \code{$gam} skeleton.}
+#'     \item{\code{init_fit}}{the (slimmed) initialiser/imputation model.}
+#'     \item{others}{the parsed bounds \code{ic}, the shared \code{cut}, and
+#'       metadata.}
+#'   }
+#'   \code{print}/\code{summary} report the pooled fit; \code{add_*} compute
+#'   pooled quantities of interest from \code{fits}.
+#' @seealso \code{\link{impute_ic_times}}, \code{\link{add_surv_prob}},
+#'   \code{\link{strip_pamm_fit}}
 #' @importFrom mvtnorm rmvnorm
 #' @importFrom stats coef as.formula
 #' @export
@@ -78,6 +91,8 @@ pamm_ic <- function(
   cache <- ic_pred_cache(fit0, ic, cut)
 
   fits <- vector("list", m)
+  smry <- vector("list", m)
+  n_obs <- NA_integer_
   for (mm in seq_len(m)) {
     beta_mm <- if (proper) {
       as.numeric(rmvnorm(1, mean = coef(fit0), sigma = fit0[["Vp"]]))
@@ -86,13 +101,17 @@ pamm_ic <- function(
     }
     t_imp <- impute_ic_times(fit0, ic, cut, beta = beta_mm, cache = cache)
     ped_m <- build_ic_ped(ic, t_imp, cut, formula, id)
-    fits[[mm]] <- pamm(model_formula, data = ped_m, engine = engine, ...)
+    fs <- fit_strip_summarise(model_formula, ped_m, engine, ...)
+    fits[[mm]] <- fs[["fit"]]
+    smry[[mm]] <- fs[["summary"]]
+    n_obs <- fs[["n"]]
   }
 
   structure(
     list(
       fits = fits,
-      init_fit = fit0,
+      pooled = pool_pamm_fits(fits, smry),
+      init_fit = strip_pamm_fit(fit0),
       ic = ic,
       cut = cut,
       formula = formula,
@@ -100,6 +119,7 @@ pamm_ic <- function(
       m = m,
       proper = proper,
       id_var = id,
+      n_obs = n_obs,
       type = "single"
     ),
     class = c("pamm_ic", "list")
@@ -202,6 +222,8 @@ pamm_ic_cr <- function(
   cache <- ic_pred_cache(fit0, ic, cut, cause_levels = cause_levels)
 
   fits <- vector("list", m)
+  smry <- vector("list", m)
+  n_obs <- NA_integer_
   for (mm in seq_len(m)) {
     beta_mm <- if (proper) {
       as.numeric(rmvnorm(1, mean = coef(fit0), sigma = fit0[["Vp"]]))
@@ -228,13 +250,17 @@ pamm_ic_cr <- function(
       censor_code,
       cause_var = cause
     )
-    fits[[mm]] <- pamm(model_formula, data = ped_m, engine = engine, ...)
+    fs <- fit_strip_summarise(model_formula, ped_m, engine, ...)
+    fits[[mm]] <- fs[["fit"]]
+    smry[[mm]] <- fs[["summary"]]
+    n_obs <- fs[["n"]]
   }
 
   structure(
     list(
       fits = fits,
-      init_fit = fit0,
+      pooled = pool_pamm_fits(fits, smry),
+      init_fit = strip_pamm_fit(fit0),
       ic = ic,
       cut = cut,
       formula = formula,
@@ -243,6 +269,7 @@ pamm_ic_cr <- function(
       proper = proper,
       id_var = id,
       cause_levels = cause_levels,
+      n_obs = n_obs,
       type = "cr"
     ),
     class = c("pamm_ic", "list")
@@ -330,51 +357,4 @@ build_ic_ped_cr <- function(
     )
   )
   as_ped(dat, formula = cr_form, cut = cut, censor_code = censor_code, id = id)
-}
-
-#' @rdname pamm_ic
-#' @param x,object A \code{pamm_ic} object.
-#' @param ... Ignored.
-#' @export
-print.pamm_ic <- function(x, ...) {
-  cat("PAMM fit to interval-censored data via multiple imputation\n")
-  cat("  type        :", x[["type"]], "\n")
-  cat(
-    "  imputations :",
-    x[["m"]],
-    if (x[["proper"]]) "(proper)" else "(improper)",
-    "\n"
-  )
-  cat(
-    "  cut-points  :",
-    length(x[["cut"]]),
-    "breaks in [",
-    format(min(x[["cut"]])),
-    ",",
-    format(max(x[["cut"]])),
-    "]\n"
-  )
-  n_ic <- sum(as.character(x[["ic"]][["ic_kind"]]) %in% c("interval", "left"))
-  cat(
-    "  subjects    :",
-    nrow(x[["ic"]]),
-    "(",
-    n_ic,
-    "interval/left-censored )\n"
-  )
-  invisible(x)
-}
-
-#' @rdname pamm_ic
-#' @export
-summary.pamm_ic <- function(object, ...) {
-  cat("Initialiser fit:\n")
-  print(summary(object[["init_fit"]], ...))
-  cat(
-    "\nPooled over",
-    object[["m"]],
-    "imputations. Use add_*() for pooled",
-    "quantities of interest.\n"
-  )
-  invisible(object)
 }

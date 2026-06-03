@@ -53,7 +53,7 @@ initialiser fit before each imputation, propagating parameter uncertainty.
 \item{engine}{Estimation engine passed to \code{\link{pamm}} (\code{"gam"} or
 \code{"bam"}).}
 
-\item{...}{Ignored.}
+\item{...}{Further arguments passed to \code{\link{pamm}} / \code{mgcv}.}
 }
 \value{
 An object of class \code{pamm_ic} with \code{type = "cr"}; \code{fits}

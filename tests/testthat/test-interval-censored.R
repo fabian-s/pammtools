@@ -140,6 +140,42 @@ test_that("pamm_ic resolves dot formulas before fitting", {
   expect_true("x" %in% all.vars(fit$model_formula))
 })
 
+test_that("pamm_ic stores slimmed fits and a pooled fit", {
+  icd <- make_ic_data(250, seed = 4)
+  fit <- pamm_ic(Surv(L, R, type = "interval2") ~ x, icd,
+    cut = seq(0, 10, by = 0.5), m = 10)
+
+  # fits are slimmed: no per-observation slots, but predict/coef/vcov still work
+  expect_null(fit$fits[[1]]$model)
+  expect_null(fit$fits[[1]]$residuals)
+  expect_true(!is.null(coef(fit$fits[[1]])))
+  expect_equal(dim(vcov(fit$fits[[1]])), rep(length(coef(fit$fits[[1]])), 2))
+  nd <- make_newdata(as_ped(icd, Surv(L, R, type = "interval2") ~ x,
+    cut = seq(0, 10, by = 0.5)), tend = unique(tend))
+  expect_silent(predict(fit$fits[[1]], nd, type = "lpmatrix"))
+
+  # pooled object: Rubin-combined coef/Vp + tables + diagnostics
+  expect_true(!is.null(fit$pooled))
+  expect_setequal(names(coef(fit$fits[[1]])), names(fit$pooled$coefficients))
+  expect_true(!is.null(fit$pooled$p.table))
+  expect_true(all(c("riv", "fmi") %in% names(fit$pooled)))
+  # pooled (within + between) variance is >= mean within-imputation variance
+  within <- mean(vapply(fit$fits, function(f) vcov(f)["x", "x"], 0))
+  expect_gte(fit$pooled$Vp["x", "x"], within - 1e-10)
+})
+
+test_that("print/summary report the pooled fit", {
+  icd <- make_ic_data(200, seed = 6)
+  fit <- pamm_ic(Surv(L, R, type = "interval2") ~ x, icd,
+    cut = seq(0, 10, by = 0.5), m = 5)
+  expect_output(print(fit), "interval-censored")
+  expect_output(print(fit), "Pooled parametric coefficients")
+  s <- summary(fit)
+  expect_s3_class(s, "summary.pamm_ic")
+  expect_true(!is.null(s$p.table) && !is.null(s$s.table))
+  expect_output(print(s), "Rubin")
+})
+
 test_that("exact-only data reproduces a plain right-censored PAMM", {
   set.seed(9)
   df <- data.frame(x = runif(150, -1, 1))
