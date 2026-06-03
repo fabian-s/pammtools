@@ -94,6 +94,7 @@ articles:
     - frailty
     - tdcovar
     - left-truncation
+    - interval-censored
     - model-evaluation
     - cumulative-effects
     - convenience
@@ -130,6 +131,8 @@ navbar:
       href: articles/tdcovar.html
     - text: Left-truncated data
       href: articles/left-truncation.html
+    - text: Interval-censored data
+      href: articles/interval-censored.html
     - text: Model evaluation
       href: articles/model-evaluation.html
     - text: Cumulative effects/Exposure-Lag-Response Associations
