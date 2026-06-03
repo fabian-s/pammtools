@@ -117,6 +117,10 @@ icd$cause <- with(icd, ifelse(true_time <= 10,
   sample(c(1, 2), nrow(icd), TRUE, c(.6, .4)), 0))
 fit_cr <- pamm_ic_cr(Surv(L, R, type = "interval2") ~ x, icd,
   cause = "cause", cut = seq(0, 10, by = 0.5), m = 10)
+ped_cr <- as_ped(
+  transform(icd, time = pmin(true_time, 10), status = cause),
+  Surv(time, status) ~ x,
+  cut = seq(0, 10, by = 0.5))
 nd_cr  <- make_newdata(ped_cr, tend = unique(tend), cause = unique(cause)) |>
   group_by(cause)
 add_cif(nd_cr, fit_cr)

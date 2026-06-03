@@ -46,14 +46,14 @@ ic_eval_env <- function(formula) {
 #'   standard pipeline).
 #' @keywords internal
 detect_ic <- function(formula, data) {
-
   lhs <- tryCatch(rlang::f_lhs(formula), error = function(e) NULL)
   if (is.null(lhs)) {
     return("none")
   }
   so <- tryCatch(
-    eval(lhs, envir = data, enclos = ic_eval_env(formula)),
-    error = function(e) NULL)
+    suppressWarnings(eval(lhs, envir = data, enclos = ic_eval_env(formula))),
+    error = function(e) NULL
+  )
   if (is.null(so) || !inherits(so, "Surv")) {
     return("none")
   }
@@ -62,7 +62,6 @@ detect_ic <- function(formula, data) {
   }
 
   "none"
-
 }
 
 #' @describeIn interval_censored Parse the interval-censored response into a
@@ -75,31 +74,38 @@ detect_ic <- function(formula, data) {
 #' @import checkmate
 #' @keywords internal
 parse_ic_surv <- function(formula, data, id = "id") {
-
   lhs <- rlang::f_lhs(formula)
-  so  <- eval(lhs, envir = data, enclos = ic_eval_env(formula))
+  so <- eval(lhs, envir = data, enclos = ic_eval_env(formula))
   if (!inherits(so, "Surv") || !isTRUE(attr(so, "type") == "interval")) {
-    stop("`formula` does not specify an interval-censored `Surv` response. ",
-      "Use `Surv(L, R, type = \"interval2\")`.", call. = FALSE)
+    stop(
+      "`formula` does not specify an interval-censored `Surv` response. ",
+      "Use `Surv(L, R, type = \"interval2\")`.",
+      call. = FALSE
+    )
   }
 
-  m      <- as.matrix(so)
+  m <- as.matrix(so)
   status <- as.integer(m[, "status"])
-  t1     <- as.numeric(m[, "time1"])
-  t2     <- as.numeric(m[, "time2"])
+  t1 <- as.numeric(m[, "time1"])
+  t2 <- as.numeric(m[, "time2"])
 
   # survival status codes: 0 right, 1 exact, 2 left, 3 interval
   ic_L <- ifelse(status == 2L, 0, t1)
-  ic_R <- ifelse(status == 0L, Inf,
-            ifelse(status == 1L, t1,
-              ifelse(status == 2L, t1, t2)))
+  ic_R <- ifelse(
+    status == 0L,
+    Inf,
+    ifelse(status == 1L, t1, ifelse(status == 2L, t1, t2))
+  )
   ic_kind <- factor(
     c("right", "exact", "left", "interval")[status + 1L],
-    levels = c("exact", "right", "left", "interval"))
+    levels = c("exact", "right", "left", "interval")
+  )
 
   if (any(is.na(ic_L)) || any(is.na(ic_R[status != 0L]))) {
-    stop("Interval bounds contain missing values after parsing the response.",
-      call. = FALSE)
+    stop(
+      "Interval bounds contain missing values after parsing the response.",
+      call. = FALSE
+    )
   }
   if (any(ic_R <= ic_L & ic_kind == "interval")) {
     stop("Found interval-censored observations with R <= L.", call. = FALSE)
@@ -109,12 +115,11 @@ parse_ic_surv <- function(formula, data, id = "id") {
   if (!id %in% names(out)) {
     out[[id]] <- seq_len(nrow(out))
   }
-  out[["ic_L"]]    <- ic_L
-  out[["ic_R"]]    <- ic_R
+  out[["ic_L"]] <- ic_L
+  out[["ic_R"]] <- ic_R
   out[["ic_kind"]] <- ic_kind
 
   out
-
 }
 
 #' @describeIn interval_censored Resolve a fixed vector of interval cut-points
@@ -129,9 +134,10 @@ parse_ic_surv <- function(formula, data, id = "id") {
 #' @param max_time Optional numeric scalar; cut-points are capped at this value.
 #' @keywords internal
 resolve_ic_cut <- function(ic, cut = NULL, max_time = NULL) {
-
   if (!is.null(cut)) {
-    return(sort(unique(cut)))
+    cut <- sort(unique(cut))
+    validate_ic_cut_covers_events(ic, cut)
+    return(cut)
   }
   ep <- c(ic[["ic_L"]], ic[["ic_R"]])
   ep <- ep[is.finite(ep) & ep > 0]
@@ -140,12 +146,29 @@ resolve_ic_cut <- function(ic, cut = NULL, max_time = NULL) {
     cut <- cut[cut <= max_time]
   }
   if (length(cut) < 2) {
-    stop("Could not derive interval cut-points from the data; please supply ",
-      "`cut` explicitly.", call. = FALSE)
+    stop(
+      "Could not derive interval cut-points from the data; please supply ",
+      "`cut` explicitly.",
+      call. = FALSE
+    )
   }
+  validate_ic_cut_covers_events(ic, cut)
 
   cut
+}
 
+validate_ic_cut_covers_events <- function(ic, cut) {
+  event <- as.character(ic[["ic_kind"]]) != "right"
+  upper <- ic[["ic_R"]][event & is.finite(ic[["ic_R"]])]
+  if (length(upper) && any(upper > max(cut))) {
+    stop(
+      "The IC cut-points must cover all finite event upper bounds. ",
+      "Increase `cut`/`max_time` or recode events beyond the analysis horizon ",
+      "as right-censored.",
+      call. = FALSE
+    )
+  }
+  invisible(TRUE)
 }
 
 #' @describeIn interval_censored Build the subject-level data frame of (exact)
@@ -159,20 +182,18 @@ resolve_ic_cut <- function(ic, cut = NULL, max_time = NULL) {
 #'   Ignored for exact and right-censored rows.
 #' @keywords internal
 ic_event_data <- function(ic, t_imp) {
-
   kind <- ic[["ic_kind"]]
-  ped_time   <- ifelse(kind %in% c("exact", "right"), ic[["ic_L"]], t_imp)
+  ped_time <- ifelse(kind %in% c("exact", "right"), ic[["ic_L"]], t_imp)
   ped_status <- ifelse(kind == "right", 0L, 1L)
 
   out <- ic
-  out[["ic_L"]]    <- NULL
-  out[["ic_R"]]    <- NULL
+  out[["ic_L"]] <- NULL
+  out[["ic_R"]] <- NULL
   out[["ic_kind"]] <- NULL
-  out[[".ped_time"]]   <- ped_time
+  out[[".ped_time"]] <- ped_time
   out[[".ped_status"]] <- as.integer(ped_status)
 
   out
-
 }
 
 #' @describeIn interval_censored Drop subjects with non-positive follow-up time
@@ -186,8 +207,12 @@ drop_zero_followup <- function(evd, warn = TRUE) {
   keep <- evd[[".ped_time"]] > 0
   if (any(!keep)) {
     if (warn) {
-      warning(sum(!keep), " subject(s) with non-positive follow-up time ",
-        "(no observed inspection) were dropped.", call. = FALSE)
+      warning(
+        sum(!keep),
+        " subject(s) with non-positive follow-up time ",
+        "(no observed inspection) were dropped.",
+        call. = FALSE
+      )
     }
     evd <- evd[keep, , drop = FALSE]
   }
@@ -206,14 +231,14 @@ drop_zero_followup <- function(evd, warn = TRUE) {
 as_ped_ic <- function(
   data,
   formula,
-  cut          = NULL,
-  max_time     = NULL,
-  id           = "id",
-  ...) {
-
-  rhs_vars <- get_rhs_vars(formula)
-  ic       <- parse_ic_surv(formula, data, id = id)
-  cut      <- resolve_ic_cut(ic, cut = cut, max_time = max_time)
+  cut = NULL,
+  max_time = NULL,
+  id = "id",
+  ...
+) {
+  rhs_vars <- resolve_rhs_vars(formula, data = data, exclude = id)
+  ic <- parse_ic_surv(formula, data, id = id)
+  cut <- resolve_ic_cut(ic, cut = cut, max_time = max_time)
 
   # midpoint initialiser: left-censored -> R/2, interval -> (L+R)/2
   L <- ic[["ic_L"]]
@@ -221,18 +246,20 @@ as_ped_ic <- function(
   t_mid <- ifelse(ic[["ic_kind"]] == "left", R / 2, (L + R) / 2)
   t_mid <- pmin(t_mid, max(cut))
 
-  ev_data  <- drop_zero_followup(ic_event_data(ic, t_mid))
+  ev_data <- drop_zero_followup(ic_event_data(ic, t_mid))
   ped_form <- stats::as.formula(
-    paste0("Surv(.ped_time, .ped_status) ~ ",
-      paste0(unique(c(rhs_vars, id)), collapse = " + ")))
+    paste0(
+      "Surv(.ped_time, .ped_status) ~ ",
+      paste0(unique(c(rhs_vars, id)), collapse = " + ")
+    )
+  )
 
   ped <- split_data(ped_form, data = ev_data, cut = cut, id = id, ...)
 
-  attr(ped, "ic")        <- ic
+  attr(ped, "ic") <- ic
   attr(ped, "ic_formula") <- formula
-  attr(ped, "breaks")    <- cut
+  attr(ped, "breaks") <- cut
   class(ped) <- unique(c("ped_ic_init", class(ped)))
 
   ped
-
 }

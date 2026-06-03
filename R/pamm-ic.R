@@ -49,32 +49,32 @@ pamm_ic <- function(
   formula,
   data,
   model_formula = NULL,
-  cut           = NULL,
-  max_time      = NULL,
-  m             = 10L,
-  proper        = TRUE,
-  init          = c("midpoint", "uniform"),
-  id            = "id",
-  engine        = "gam",
-  ...) {
-
+  cut = NULL,
+  max_time = NULL,
+  m = 10L,
+  proper = TRUE,
+  init = c("midpoint", "uniform"),
+  id = "id",
+  engine = "gam",
+  ...
+) {
   init <- match.arg(init)
   assert_count(m, positive = TRUE)
 
   ped0 <- as_ped_ic(data, formula, cut = cut, max_time = max_time, id = id)
-  ic   <- attr(ped0, "ic")
-  cut  <- attr(ped0, "breaks")
+  ic <- attr(ped0, "ic")
+  cut <- attr(ped0, "breaks")
 
   if (init == "uniform") {
     # replace midpoint initialiser by a single uniform draw
     t_unif <- draw_uniform_ic(ic, cut)
-    ped0   <- build_ic_ped(ic, t_unif, cut, formula, id)
+    ped0 <- build_ic_ped(ic, t_unif, cut, formula, id)
   }
 
   if (is.null(model_formula)) {
-    model_formula <- default_pamm_formula(formula, id = id)
+    model_formula <- default_pamm_formula(formula, data = data, id = id)
   }
-  fit0  <- pamm(model_formula, data = ped0, engine = engine, ...)
+  fit0 <- pamm(model_formula, data = ped0, engine = engine, ...)
   cache <- ic_pred_cache(fit0, ic, cut)
 
   fits <- vector("list", m)
@@ -84,25 +84,26 @@ pamm_ic <- function(
     } else {
       coef(fit0)
     }
-    t_imp      <- impute_ic_times(fit0, ic, cut, beta = beta_mm, cache = cache)
-    ped_m      <- build_ic_ped(ic, t_imp, cut, formula, id)
+    t_imp <- impute_ic_times(fit0, ic, cut, beta = beta_mm, cache = cache)
+    ped_m <- build_ic_ped(ic, t_imp, cut, formula, id)
     fits[[mm]] <- pamm(model_formula, data = ped_m, engine = engine, ...)
   }
 
   structure(
     list(
-      fits          = fits,
-      init_fit      = fit0,
-      ic            = ic,
-      cut           = cut,
-      formula       = formula,
+      fits = fits,
+      init_fit = fit0,
+      ic = ic,
+      cut = cut,
+      formula = formula,
       model_formula = model_formula,
-      m             = m,
-      proper        = proper,
-      id_var        = id,
-      type          = "single"),
-    class = c("pamm_ic", "list"))
-
+      m = m,
+      proper = proper,
+      id_var = id,
+      type = "single"
+    ),
+    class = c("pamm_ic", "list")
+  )
 }
 
 #' Fit a competing-risks PAMM to interval-censored data via multiple imputation
@@ -133,48 +134,71 @@ pamm_ic_cr <- function(
   data,
   cause,
   model_formula = NULL,
-  cut           = NULL,
-  max_time      = NULL,
-  m             = 10L,
-  proper        = TRUE,
-  censor_code   = 0L,
-  id            = "id",
-  engine        = "gam",
-  ...) {
-
+  cut = NULL,
+  max_time = NULL,
+  m = 10L,
+  proper = TRUE,
+  censor_code = 0L,
+  id = "id",
+  engine = "gam",
+  ...
+) {
   assert_count(m, positive = TRUE)
   assert_string(cause)
   assert_subset(cause, names(data))
 
-  ic  <- parse_ic_surv(formula, data, id = id)
+  ic <- parse_ic_surv(formula, data, id = id)
   cut <- resolve_ic_cut(ic, cut = cut, max_time = max_time)
 
   cause_raw <- data[[cause]]
-  is_cens   <- !is.na(cause_raw) & as.character(cause_raw) == as.character(censor_code)
+  is_cens <- !is.na(cause_raw) &
+    as.character(cause_raw) == as.character(censor_code)
   # for right-censored survival rows, force censoring regardless of cause column
-  is_cens   <- is_cens | as.character(ic[["ic_kind"]]) == "right"
+  is_cens <- is_cens | as.character(ic[["ic_kind"]]) == "right"
   cause_known <- ifelse(is_cens, NA, as.character(cause_raw))
   cause_levels <- sort(unique(stats::na.omit(cause_known)))
   if (length(cause_levels) < 2) {
-    stop("Fewer than two competing causes found in `", cause, "`.", call. = FALSE)
+    stop(
+      "Fewer than two competing causes found in `",
+      cause,
+      "`.",
+      call. = FALSE
+    )
   }
 
   if (is.null(model_formula)) {
-    model_formula <- default_pamm_formula(formula, id = id, by_cause = TRUE)
+    model_formula <- default_pamm_formula(
+      formula,
+      data = data,
+      id = id,
+      by_cause = TRUE,
+      exclude = cause
+    )
   }
 
   # initialiser: midpoint times + observed causes (unknown causes drawn from the
   # marginal cause distribution) -> stacked cause-specific PED
-  L <- ic[["ic_L"]]; R <- ic[["ic_R"]]
+  L <- ic[["ic_L"]]
+  R <- ic[["ic_R"]]
   t_mid <- pmin(ifelse(ic[["ic_kind"]] == "left", R / 2, (L + R) / 2), max(cut))
   cause0 <- cause_known
   unknown <- which(!is_cens & is.na(cause0))
   if (length(unknown)) {
     cause0[unknown] <- sample(cause_levels, length(unknown), replace = TRUE)
   }
-  ped0  <- build_ic_ped_cr(ic, t_mid, cause0, is_cens, cut, formula, id,
-    cause_levels, censor_code)
-  fit0  <- pamm(model_formula, data = ped0, engine = engine, ...)
+  ped0 <- build_ic_ped_cr(
+    ic,
+    t_mid,
+    cause0,
+    is_cens,
+    cut,
+    formula,
+    id,
+    cause_levels,
+    censor_code,
+    cause_var = cause
+  )
+  fit0 <- pamm(model_formula, data = ped0, engine = engine, ...)
   cache <- ic_pred_cache(fit0, ic, cut, cause_levels = cause_levels)
 
   fits <- vector("list", m)
@@ -184,28 +208,45 @@ pamm_ic_cr <- function(
     } else {
       coef(fit0)
     }
-    imp        <- impute_ic_cr(fit0, ic, cut, beta = beta_mm, cache = cache,
-      cause_known = cause_known)
-    ped_m      <- build_ic_ped_cr(ic, imp[["time"]], imp[["cause"]], is_cens,
-      cut, formula, id, cause_levels, censor_code)
+    imp <- impute_ic_cr(
+      fit0,
+      ic,
+      cut,
+      beta = beta_mm,
+      cache = cache,
+      cause_known = cause_known
+    )
+    ped_m <- build_ic_ped_cr(
+      ic,
+      imp[["time"]],
+      imp[["cause"]],
+      is_cens,
+      cut,
+      formula,
+      id,
+      cause_levels,
+      censor_code,
+      cause_var = cause
+    )
     fits[[mm]] <- pamm(model_formula, data = ped_m, engine = engine, ...)
   }
 
   structure(
     list(
-      fits          = fits,
-      init_fit      = fit0,
-      ic            = ic,
-      cut           = cut,
-      formula       = formula,
+      fits = fits,
+      init_fit = fit0,
+      ic = ic,
+      cut = cut,
+      formula = formula,
       model_formula = model_formula,
-      m             = m,
-      proper        = proper,
-      id_var        = id,
-      cause_levels  = cause_levels,
-      type          = "cr"),
-    class = c("pamm_ic", "list"))
-
+      m = m,
+      proper = proper,
+      id_var = id,
+      cause_levels = cause_levels,
+      type = "cr"
+    ),
+    class = c("pamm_ic", "list")
+  )
 }
 
 # ---------------------------------------------------------------------------
@@ -213,8 +254,14 @@ pamm_ic_cr <- function(
 # ---------------------------------------------------------------------------
 
 # Construct a default model formula `ped_status ~ s(tend) [+ by-cause] + covars`.
-default_pamm_formula <- function(formula, id = "id", by_cause = FALSE) {
-  rhs <- setdiff(get_rhs_vars(formula), id)
+default_pamm_formula <- function(
+  formula,
+  data = NULL,
+  id = "id",
+  by_cause = FALSE,
+  exclude = character()
+) {
+  rhs <- resolve_rhs_vars(formula, data = data, exclude = c(id, exclude))
   base <- if (by_cause) "s(tend, by = cause) + cause" else "s(tend)"
   terms <- c(base, if (length(rhs)) paste(rhs, collapse = " + "))
   stats::as.formula(paste("ped_status ~", paste(terms, collapse = " + ")))
@@ -222,40 +269,66 @@ default_pamm_formula <- function(formula, id = "id", by_cause = FALSE) {
 
 # Uniform initial draw within (L, R] (R/2 for left-censored).
 draw_uniform_ic <- function(ic, cut) {
-  L <- ic[["ic_L"]]; R <- pmin(ic[["ic_R"]], max(cut))
+  L <- ic[["ic_L"]]
+  R <- pmin(ic[["ic_R"]], max(cut))
   u <- stats::runif(nrow(ic))
-  ifelse(as.character(ic[["ic_kind"]]) %in% c("exact", "right"), L, L + u * (R - L))
+  ifelse(
+    as.character(ic[["ic_kind"]]) %in% c("exact", "right"),
+    L,
+    L + u * (R - L)
+  )
 }
 
 # Build a single-event PED from imputed exact times via the standard pipeline.
 build_ic_ped <- function(ic, t_imp, cut, formula, id) {
-  rhs_vars <- get_rhs_vars(formula)
-  evd      <- drop_zero_followup(ic_event_data(ic, t_imp), warn = FALSE)
+  rhs_vars <- resolve_rhs_vars(formula, data = ic, exclude = id)
+  evd <- drop_zero_followup(ic_event_data(ic, t_imp), warn = FALSE)
   ped_form <- stats::as.formula(
-    paste0("Surv(.ped_time, .ped_status) ~ ",
-      paste0(unique(c(rhs_vars, id)), collapse = " + ")))
+    paste0(
+      "Surv(.ped_time, .ped_status) ~ ",
+      paste0(unique(c(rhs_vars, id)), collapse = " + ")
+    )
+  )
   split_data(ped_form, data = evd, cut = cut, id = id)
 }
 
 # Build a competing-risks PED (stacked ped_cr) from imputed times and causes.
-build_ic_ped_cr <- function(ic, time, cause, is_cens, cut, formula, id,
-  cause_levels, censor_code) {
-
-  rhs_vars <- get_rhs_vars(formula)
+build_ic_ped_cr <- function(
+  ic,
+  time,
+  cause,
+  is_cens,
+  cut,
+  formula,
+  id,
+  cause_levels,
+  censor_code,
+  cause_var = NULL
+) {
+  rhs_vars <- resolve_rhs_vars(formula, data = ic, exclude = c(id, cause_var))
   dat <- ic
   dat[["ic_L"]] <- dat[["ic_R"]] <- dat[["ic_kind"]] <- NULL
-  dat[[".ped_time"]] <- ifelse(as.character(ic[["ic_kind"]]) %in%
-      c("exact", "right"), ic[["ic_L"]], time)
+  dat[[".ped_time"]] <- ifelse(
+    as.character(ic[["ic_kind"]]) %in%
+      c("exact", "right"),
+    ic[["ic_L"]],
+    time
+  )
   status_cr <- ifelse(is_cens, censor_code, cause)
-  dat[[".status_cr"]] <- factor(status_cr,
-    levels = c(censor_code, cause_levels))
+  dat[[".status_cr"]] <- factor(
+    status_cr,
+    levels = c(censor_code, cause_levels)
+  )
 
   keep <- dat[[".ped_time"]] > 0
-  dat  <- dat[keep, , drop = FALSE]
+  dat <- dat[keep, , drop = FALSE]
 
   cr_form <- stats::as.formula(
-    paste0("Surv(.ped_time, .status_cr) ~ ",
-      paste0(unique(c(rhs_vars, id)), collapse = " + ")))
+    paste0(
+      "Surv(.ped_time, .status_cr) ~ ",
+      paste0(unique(c(rhs_vars, id)), collapse = " + ")
+    )
+  )
   as_ped(dat, formula = cr_form, cut = cut, censor_code = censor_code, id = id)
 }
 
@@ -266,11 +339,29 @@ build_ic_ped_cr <- function(ic, time, cause, is_cens, cut, formula, id,
 print.pamm_ic <- function(x, ...) {
   cat("PAMM fit to interval-censored data via multiple imputation\n")
   cat("  type        :", x[["type"]], "\n")
-  cat("  imputations :", x[["m"]], if (x[["proper"]]) "(proper)" else "(improper)", "\n")
-  cat("  cut-points  :", length(x[["cut"]]), "breaks in [",
-    format(min(x[["cut"]])), ",", format(max(x[["cut"]])), "]\n")
+  cat(
+    "  imputations :",
+    x[["m"]],
+    if (x[["proper"]]) "(proper)" else "(improper)",
+    "\n"
+  )
+  cat(
+    "  cut-points  :",
+    length(x[["cut"]]),
+    "breaks in [",
+    format(min(x[["cut"]])),
+    ",",
+    format(max(x[["cut"]])),
+    "]\n"
+  )
   n_ic <- sum(as.character(x[["ic"]][["ic_kind"]]) %in% c("interval", "left"))
-  cat("  subjects    :", nrow(x[["ic"]]), "(", n_ic, "interval/left-censored )\n")
+  cat(
+    "  subjects    :",
+    nrow(x[["ic"]]),
+    "(",
+    n_ic,
+    "interval/left-censored )\n"
+  )
   invisible(x)
 }
 
@@ -279,7 +370,11 @@ print.pamm_ic <- function(x, ...) {
 summary.pamm_ic <- function(object, ...) {
   cat("Initialiser fit:\n")
   print(summary(object[["init_fit"]], ...))
-  cat("\nPooled over", object[["m"]], "imputations. Use add_*() for pooled",
-    "quantities of interest.\n")
+  cat(
+    "\nPooled over",
+    object[["m"]],
+    "imputations. Use add_*() for pooled",
+    "quantities of interest.\n"
+  )
   invisible(object)
 }

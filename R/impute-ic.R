@@ -20,18 +20,22 @@
 #'   \code{X_list} (competing risks).
 #' @importFrom mgcv predict.gam
 #' @keywords internal
-ic_pred_cache <- function(object, ic, cut, cause_levels = NULL,
-  cause_var = "cause") {
-
-  ii    <- int_info(cut)
+ic_pred_cache <- function(
+  object,
+  ic,
+  cut,
+  cause_levels = NULL,
+  cause_var = "cause"
+) {
+  ii <- int_info(cut)
   n_int <- nrow(ii)
   n_sub <- nrow(ic)
 
   grid <- ic[rep(seq_len(n_sub), each = n_int), , drop = FALSE]
-  grid[["tstart"]]   <- rep(ii[["tstart"]], times = n_sub)
-  grid[["tend"]]     <- rep(ii[["tend"]],   times = n_sub)
-  grid[["intlen"]]   <- rep(ii[["intlen"]], times = n_sub)
-  grid[["intmid"]]   <- rep(ii[["intmid"]], times = n_sub)
+  grid[["tstart"]] <- rep(ii[["tstart"]], times = n_sub)
+  grid[["tend"]] <- rep(ii[["tend"]], times = n_sub)
+  grid[["intlen"]] <- rep(ii[["intlen"]], times = n_sub)
+  grid[["intmid"]] <- rep(ii[["intmid"]], times = n_sub)
   grid[["interval"]] <- rep(ii[["interval"]], times = n_sub)
 
   if (is.null(cause_levels)) {
@@ -45,9 +49,15 @@ ic_pred_cache <- function(object, ic, cut, cause_levels = NULL,
     predict.gam(object, newdata = g, type = "lpmatrix")
   })
   names(X_list) <- cause_levels
-  list(ii = ii, n_int = n_int, n_sub = n_sub, X_list = X_list, grid = grid,
-    cause_levels = cause_levels, cause_var = cause_var)
-
+  list(
+    ii = ii,
+    n_int = n_int,
+    n_sub = n_sub,
+    X_list = X_list,
+    grid = grid,
+    cause_levels = cause_levels,
+    cause_var = cause_var
+  )
 }
 
 # Invert a (per-subject) piecewise-linear cumulative hazard at a target value.
@@ -57,8 +67,12 @@ ic_pred_cache <- function(object, ic, cut, cause_levels = NULL,
   out <- numeric(length(target))
   for (k in seq_along(target)) {
     si <- s[k]
-    jc <- findInterval(target[k], Hcut[, si], left.open = TRUE,
-      rightmost.closed = TRUE)
+    jc <- findInterval(
+      target[k],
+      Hcut[, si],
+      left.open = TRUE,
+      rightmost.closed = TRUE
+    )
     jc <- min(max(jc, 1L), n_int)
     out[k] <- cutv[jc] + (target[k] - Hcut[jc, si]) / hm[jc, si]
   }
@@ -83,27 +97,26 @@ ic_pred_cache <- function(object, ic, cut, cause_levels = NULL,
 #' @importFrom stats coef runif
 #' @keywords internal
 impute_ic_times <- function(object, ic, cut, beta = NULL, cache = NULL) {
-
   if (is.null(cache)) {
     cache <- ic_pred_cache(object, ic, cut)
   }
-  ii    <- cache[["ii"]]
-  X     <- cache[["X"]]
+  ii <- cache[["ii"]]
+  X <- cache[["X"]]
   n_int <- cache[["n_int"]]
   n_sub <- nrow(ic)
   if (is.null(beta)) {
     beta <- coef(object)
   }
 
-  h  <- as.numeric(exp(X %*% beta))
+  h <- as.numeric(exp(X %*% beta))
   hm <- matrix(h, nrow = n_int, ncol = n_sub)
   Hend <- matrix(apply(hm * ii[["intlen"]], 2, cumsum), nrow = n_int)
-  Hcut <- rbind(0, Hend)                       # H at c_0, ..., c_J
-  cutv <- c(ii[["tstart"]][1], ii[["tend"]])   # c_0, ..., c_J
+  Hcut <- rbind(0, Hend) # H at c_0, ..., c_J
+  cutv <- c(ii[["tstart"]][1], ii[["tend"]]) # c_0, ..., c_J
 
-  kind  <- as.character(ic[["ic_kind"]])
+  kind <- as.character(ic[["ic_kind"]])
   t_imp <- ifelse(kind %in% c("exact", "right"), ic[["ic_L"]], NA_real_)
-  idx   <- which(kind %in% c("interval", "left"))
+  idx <- which(kind %in% c("interval", "left"))
 
   if (length(idx)) {
     L <- ic[["ic_L"]][idx]
@@ -117,7 +130,7 @@ impute_ic_times <- function(object, ic, cut, beta = NULL, cache = NULL) {
 
     HL <- eval_H(L, idx)
     HR <- eval_H(R, idx)
-    U  <- runif(length(idx))
+    U <- runif(length(idx))
     delta <- HR - HL
     small <- delta < 1e-8
 
@@ -137,7 +150,6 @@ impute_ic_times <- function(object, ic, cut, beta = NULL, cache = NULL) {
   }
 
   t_imp
-
 }
 
 #' Draw event times and causes for interval-censored competing-risks subjects
@@ -158,16 +170,24 @@ impute_ic_times <- function(object, ic, cut, beta = NULL, cache = NULL) {
 #'   length \code{nrow(ic)}; \code{cause} is \code{NA} for censored rows).
 #' @importFrom stats coef runif
 #' @keywords internal
-impute_ic_cr <- function(object, ic, cut, beta = NULL, cache = NULL,
-  cause_known = NULL) {
-
+impute_ic_cr <- function(
+  object,
+  ic,
+  cut,
+  beta = NULL,
+  cache = NULL,
+  cause_known = NULL
+) {
   if (is.null(cache) || is.null(cache[["X_list"]])) {
-    stop("`cache` with per-cause design matrices (`X_list`) is required for ",
-      "competing-risks imputation.", call. = FALSE)
+    stop(
+      "`cache` with per-cause design matrices (`X_list`) is required for ",
+      "competing-risks imputation.",
+      call. = FALSE
+    )
   }
-  ii           <- cache[["ii"]]
-  n_int        <- cache[["n_int"]]
-  n_sub        <- nrow(ic)
+  ii <- cache[["ii"]]
+  n_int <- cache[["n_int"]]
+  n_sub <- nrow(ic)
   cause_levels <- cache[["cause_levels"]]
   if (is.null(beta)) {
     beta <- coef(object)
@@ -188,11 +208,11 @@ impute_ic_cr <- function(object, ic, cut, beta = NULL, cache = NULL,
     Hcut[cbind(j, s)] + htot[cbind(j, s)] * (t - cutv[j])
   }
   draw_time <- function(s) {
-    L  <- ic[["ic_L"]][s]
-    R  <- min(ic[["ic_R"]][s], max(cut))
+    L <- ic[["ic_L"]][s]
+    R <- min(ic[["ic_R"]][s], max(cut))
     HL <- eval_H(L, s)
     HR <- eval_H(R, s)
-    U  <- runif(1)
+    U <- runif(1)
     delta <- HR - HL
     if (delta < 1e-8) {
       return(L + U * (R - L))
@@ -211,35 +231,39 @@ impute_ic_cr <- function(object, ic, cut, beta = NULL, cache = NULL,
     p / sum(p)
   }
 
-  time  <- rep(NA_real_, n_sub)
+  time <- rep(NA_real_, n_sub)
   cause <- rep(NA_character_, n_sub)
   to_imp <- which(as.character(ic[["ic_kind"]]) %in% c("interval", "left"))
-  exact  <- which(as.character(ic[["ic_kind"]]) == "exact")
+  exact <- which(as.character(ic[["ic_kind"]]) == "exact")
 
   for (s in exact) {
-    time[s]  <- ic[["ic_L"]][s]
-    cause[s] <- if (!is.null(cause_known)) as.character(cause_known[s]) else NA
+    time[s] <- ic[["ic_L"]][s]
+    known <- if (!is.null(cause_known)) cause_known[s] else NA
+    cause[s] <- if (!is.na(known)) {
+      as.character(known)
+    } else {
+      sample(cause_levels, 1L, prob = cause_probs(time[s], s))
+    }
   }
   for (s in to_imp) {
     known <- if (!is.null(cause_known)) cause_known[s] else NA
     if (!is.na(known)) {
       # rejection: propose from all-cause conditional, accept w.p. h_k/h_tot
-      accepted <- FALSE
-      t <- draw_time(s)
       for (try in seq_len(50L)) {
         t <- draw_time(s)
         p <- cause_probs(t, s)[as.character(known)]
-        if (runif(1) <= p) { accepted <- TRUE; break }
+        if (runif(1) <= p) {
+          break
+        }
       }
-      time[s]  <- t
+      time[s] <- t
       cause[s] <- as.character(known)
     } else {
       t <- draw_time(s)
-      time[s]  <- t
+      time[s] <- t
       cause[s] <- sample(cause_levels, 1L, prob = cause_probs(t, s))
     }
   }
 
   list(time = time, cause = cause)
-
 }

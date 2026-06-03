@@ -30,6 +30,15 @@ pooled_point <- function(object, newdata, adder, value_col, ...) {
   rowMeans(do.call(cbind, preds))
 }
 
+ic_prediction_grid <- function(object, newdata, time_var, interval_length) {
+  fit1 <- object[["fits"]][[1]]
+  tv <- resolve_time_var(time_var, fit1, newdata)
+  list(
+    data = reconstruct_cutpoints(newdata, fit1, tv, interval_length),
+    time_var = tv
+  )
+}
+
 # Per-group cumulative sum of intlen * hazard, applied column-wise to a draw
 # matrix (one column per posterior draw). Rows are assumed time-ordered within
 # each group, as produced by make_newdata().
@@ -46,27 +55,33 @@ ic_group_cumsum <- function(mat, intlen, grp) {
 # each fit's own design matrix, returning lower/upper quantiles.
 #' @importFrom mvtnorm rmvnorm
 #' @importFrom stats coef quantile
-ic_ci_draws <- function(object, newdata, nsim, kind, alpha, time_var,
-  interval_length) {
-
+ic_ci_draws <- function(
+  object,
+  newdata,
+  nsim,
+  kind,
+  alpha,
+  time_var,
+  interval_length
+) {
   fits <- object[["fits"]]
-  m    <- length(fits)
-  per  <- ceiling(nsim / m)
-  tv   <- resolve_time_var(time_var, fits[[1]], newdata)
+  m <- length(fits)
+  per <- ceiling(nsim / m)
+  tv <- resolve_time_var(time_var, fits[[1]], newdata)
 
   nd <- newdata
   intlen <- NULL
-  grp    <- NULL
+  grp <- NULL
   if (kind != "hazard") {
-    nd     <- reconstruct_intlen(nd, time_var = tv, interval_length = interval_length)
+    nd <- reconstruct_cutpoints(nd, fits[[1]], tv, interval_length)
     intlen <- nd[[interval_length]]
-    grp    <- group_indices(nd)
+    grp <- group_indices(nd)
   }
 
   cols <- lapply(fits, function(f) {
     X <- predict.gam(f, newdata = nd, type = "lpmatrix")
     B <- rmvnorm(per, mean = coef(f), sigma = f[["Vp"]])
-    H <- exp(X %*% t(B))                       # nrow x per hazard draws
+    H <- exp(X %*% t(B)) # nrow x per hazard draws
     if (kind == "hazard") {
       return(H)
     }
@@ -76,9 +91,10 @@ ic_ci_draws <- function(object, newdata, nsim, kind, alpha, time_var,
   M <- do.call(cbind, cols)
 
   list(
-    lower = apply(M, 1, quantile, probs = alpha / 2,     na.rm = TRUE),
-    upper = apply(M, 1, quantile, probs = 1 - alpha / 2, na.rm = TRUE))
-
+    lower = apply(M, 1, quantile, probs = alpha / 2, na.rm = TRUE),
+    upper = apply(M, 1, quantile, probs = 1 - alpha / 2, na.rm = TRUE),
+    data = nd
+  )
 }
 
 #' @rdname add_hazard
@@ -87,35 +103,69 @@ ic_ci_draws <- function(object, newdata, nsim, kind, alpha, time_var,
 #' @param nsim Total number of pooled posterior draws used for the interval.
 #' @export
 add_hazard.pamm_ic <- function(
-  newdata, object, ci = TRUE, alpha = 0.05, nsim = 500L, time_var = NULL, ...) {
-
-  newdata[["hazard"]] <- pooled_point(object, newdata, add_hazard, "hazard",
-    time_var = time_var, ...)
+  newdata,
+  object,
+  ci = TRUE,
+  alpha = 0.05,
+  nsim = 500L,
+  time_var = NULL,
+  ...
+) {
+  newdata[["hazard"]] <- pooled_point(
+    object,
+    newdata,
+    add_hazard,
+    "hazard",
+    time_var = time_var,
+    ...
+  )
   if (ci) {
     d <- ic_ci_draws(object, newdata, nsim, "hazard", alpha, time_var, "intlen")
     newdata[["ci_lower"]] <- d[["lower"]]
     newdata[["ci_upper"]] <- d[["upper"]]
   }
   newdata
-
 }
 
 #' @rdname add_hazard
 #' @export
 add_cumu_hazard.pamm_ic <- function(
-  newdata, object, ci = TRUE, alpha = 0.05, nsim = 500L, time_var = NULL,
-  interval_length = "intlen", ...) {
-
-  newdata[["cumu_hazard"]] <- pooled_point(object, newdata, add_cumu_hazard,
-    "cumu_hazard", time_var = time_var, interval_length = interval_length, ...)
+  newdata,
+  object,
+  ci = TRUE,
+  alpha = 0.05,
+  nsim = 500L,
+  time_var = NULL,
+  interval_length = "intlen",
+  ...
+) {
+  grid <- ic_prediction_grid(object, newdata, time_var, interval_length)
+  joindata <- grid[["data"]]
+  time_var <- grid[["time_var"]]
+  joindata[["cumu_hazard"]] <- pooled_point(
+    object,
+    joindata,
+    add_cumu_hazard,
+    "cumu_hazard",
+    time_var = time_var,
+    interval_length = interval_length,
+    ...
+  )
   if (ci) {
-    d <- ic_ci_draws(object, newdata, nsim, "cumu", alpha, time_var,
-      interval_length)
-    newdata[["cumu_lower"]] <- d[["lower"]]
-    newdata[["cumu_upper"]] <- d[["upper"]]
+    d <- ic_ci_draws(
+      object,
+      joindata,
+      nsim,
+      "cumu",
+      alpha,
+      time_var,
+      interval_length
+    )
+    joindata <- d[["data"]]
+    joindata[["cumu_lower"]] <- d[["lower"]]
+    joindata[["cumu_upper"]] <- d[["upper"]]
   }
-  newdata
-
+  suppressMessages(newdata %>% left_join(joindata))
 }
 
 #' @rdname add_surv_prob
@@ -123,52 +173,127 @@ add_cumu_hazard.pamm_ic <- function(
 #' @param nsim Total number of pooled posterior draws used for the interval.
 #' @export
 add_surv_prob.pamm_ic <- function(
-  newdata, object, ci = TRUE, alpha = 0.05, nsim = 500L, time_var = NULL,
-  interval_length = "intlen", ...) {
-
-  newdata[["surv_prob"]] <- pooled_point(object, newdata, add_surv_prob,
-    "surv_prob", time_var = time_var, interval_length = interval_length, ...)
+  newdata,
+  object,
+  ci = TRUE,
+  alpha = 0.05,
+  nsim = 500L,
+  time_var = NULL,
+  interval_length = "intlen",
+  ...
+) {
+  grid <- ic_prediction_grid(object, newdata, time_var, interval_length)
+  joindata <- grid[["data"]]
+  time_var <- grid[["time_var"]]
+  joindata[["surv_prob"]] <- pooled_point(
+    object,
+    joindata,
+    add_surv_prob,
+    "surv_prob",
+    time_var = time_var,
+    interval_length = interval_length,
+    ...
+  )
   if (ci) {
-    d <- ic_ci_draws(object, newdata, nsim, "surv", alpha, time_var,
-      interval_length)
-    newdata[["surv_lower"]] <- d[["lower"]]
-    newdata[["surv_upper"]] <- d[["upper"]]
+    d <- ic_ci_draws(
+      object,
+      joindata,
+      nsim,
+      "surv",
+      alpha,
+      time_var,
+      interval_length
+    )
+    joindata <- d[["data"]]
+    joindata[["surv_lower"]] <- d[["lower"]]
+    joindata[["surv_upper"]] <- d[["upper"]]
   }
-  newdata
+  suppressMessages(newdata %>% left_join(joindata))
+}
 
+# CIF values for one cause-by-covariate group and one fit. `coef_mat` has one
+# row per coefficient vector, so posterior draws and plug-in estimates share the
+# same computation.
+#' @importFrom stats predict
+ic_cif_fit_group <- function(
+  group_df,
+  fit,
+  coef_mat,
+  cause_levels,
+  cause_var,
+  interval_length
+) {
+  cause_data <- unique(as.character(group_df[[cause_var]]))
+  if (length(cause_data) > 1) {
+    stop("Did you forget to group by cause?", call. = FALSE)
+  }
+  dt <- group_df[[interval_length]]
+
+  hazards <- lapply(cause_levels, function(cl) {
+    dfc <- group_df
+    dfc[[cause_var]] <- factor(cl, levels = cause_levels)
+    X <- predict(fit, dfc, type = "lpmatrix")
+    exp(X %*% t(coef_mat))
+  })
+  names(hazards) <- as.character(cause_levels)
+
+  total_hazard <- Reduce(`+`, hazards)
+  overall_surv <- apply(total_hazard, 2, function(z) exp(-cumsum(z * dt)))
+  if (!is.matrix(overall_surv)) {
+    overall_surv <- matrix(overall_surv, nrow = nrow(total_hazard))
+  }
+  survival <- rbind(1, overall_surv[-nrow(overall_surv), , drop = FALSE])
+  hazard <- hazards[[cause_data]]
+  cif_inc <- (hazard / total_hazard) *
+    survival *
+    (1 - exp(-total_hazard * dt))
+  cif <- apply(cif_inc, 2, cumsum)
+  if (is.matrix(cif)) {
+    cif
+  } else {
+    matrix(cif, ncol = nrow(coef_mat))
+  }
+}
+
+# Deterministic MI point estimate: average per-imputation plug-in CIFs.
+#' @importFrom stats coef
+ic_cif_point_group <- function(group_df, object, cause_var, interval_length) {
+  cols <- lapply(object[["fits"]], function(f) {
+    ic_cif_fit_group(
+      group_df,
+      f,
+      matrix(coef(f), nrow = 1),
+      object[["cause_levels"]],
+      cause_var,
+      interval_length
+    )
+  })
+  rowMeans(do.call(cbind, cols))
 }
 
 # Pooled CIF draws for a single cause-by-covariate group, evaluated with each
 # fit's own design matrices. Returns the [nrow x nsim] matrix of CIF draws.
 #' @importFrom mvtnorm rmvnorm
-#' @importFrom stats coef predict
-ic_cif_draws_group <- function(group_df, object, per, cause_var,
-  interval_length) {
-
-  fits         <- object[["fits"]]
-  cause_levels <- as.factor(levels(group_df[[cause_var]]))
-  cause_data   <- unique(group_df[[cause_var]])
-  dt           <- group_df[[interval_length]]
-
-  cols <- lapply(fits, function(f) {
+#' @importFrom stats coef
+ic_cif_draws_group <- function(
+  group_df,
+  object,
+  per,
+  cause_var,
+  interval_length
+) {
+  cols <- lapply(object[["fits"]], function(f) {
     B <- rmvnorm(per, mean = coef(f), sigma = f[["Vp"]])
-    hazards <- lapply(cause_levels, function(cl) {
-      dfc <- group_df
-      dfc[[cause_var]] <- factor(cl, levels = levels(cause_levels))
-      X <- predict(f, dfc, type = "lpmatrix")
-      exp(X %*% t(B))                          # nrow x per
-    })
-    names(hazards) <- as.character(cause_levels)
-    total_hazard <- Reduce(`+`, hazards)
-    overall_surv <- apply(total_hazard, 2, function(z) exp(-cumsum(z * dt)))
-    survival     <- rbind(1, overall_surv[-nrow(overall_surv), , drop = FALSE])
-    hazard       <- hazards[[as.character(cause_data)]]
-    cif_inc <- (hazard / total_hazard) * survival * (1 - exp(-total_hazard * dt))
-    apply(cif_inc, 2, cumsum)
+    ic_cif_fit_group(
+      group_df,
+      f,
+      B,
+      object[["cause_levels"]],
+      cause_var,
+      interval_length
+    )
   })
-
   do.call(cbind, cols)
-
 }
 
 #' @rdname add_cif
@@ -176,34 +301,59 @@ ic_cif_draws_group <- function(group_df, object, per, cause_var,
 #' @param nsim Total number of pooled posterior draws used for the interval.
 #' @export
 add_cif.pamm_ic <- function(
-  newdata, object, ci = TRUE, alpha = 0.05, nsim = 500L, cause_var = "cause",
-  time_var = NULL, interval_length = "intlen", ...) {
-
+  newdata,
+  object,
+  ci = TRUE,
+  alpha = 0.05,
+  nsim = 500L,
+  cause_var = "cause",
+  time_var = NULL,
+  interval_length = "intlen",
+  ...
+) {
   if (!identical(object[["type"]], "cr")) {
-    stop("add_cif() requires a competing-risks `pamm_ic` (see pamm_ic_cr()).",
-      call. = FALSE)
+    stop(
+      "add_cif() requires a competing-risks `pamm_ic` (see pamm_ic_cr()).",
+      call. = FALSE
+    )
   }
-  fit1     <- object[["fits"]][[1]]
-  m        <- length(object[["fits"]])
-  per      <- ceiling(nsim / m)
+  fit1 <- object[["fits"]][[1]]
+  m <- length(object[["fits"]])
+  per <- ceiling(nsim / m)
   time_var <- resolve_time_var(time_var, fit1, newdata)
   joindata <- reconstruct_cutpoints(newdata, fit1, time_var, interval_length)
 
   joindata <- map_dfr(
     split(joindata, group_indices(joindata)),
     function(.x) {
-      .x  <- arrange(.x, .data[[time_var]])
-      cif <- ic_cif_draws_group(.x, object, per, cause_var, interval_length)
-      .x[["cif"]] <- pmin(pmax(rowMeans(cif), 0), 1)
+      .x <- arrange(.x, .data[[time_var]])
+      .x[["cif"]] <- pmin(
+        pmax(
+          ic_cif_point_group(.x, object, cause_var, interval_length),
+          0
+        ),
+        1
+      )
       if (ci) {
-        .x[["cif_lower"]] <- pmin(pmax(
-          apply(cif, 1, quantile, alpha / 2, na.rm = TRUE), 0), 1)
-        .x[["cif_upper"]] <- pmin(pmax(
-          apply(cif, 1, quantile, 1 - alpha / 2, na.rm = TRUE), 0), 1)
+        cif <- ic_cif_draws_group(.x, object, per, cause_var, interval_length)
+        .x[["cif_lower"]] <- pmin(
+          pmax(
+            apply(cif, 1, quantile, alpha / 2, na.rm = TRUE),
+            0
+          ),
+          1
+        )
+        .x[["cif_upper"]] <- pmin(
+          pmax(
+            apply(cif, 1, quantile, 1 - alpha / 2, na.rm = TRUE),
+            0
+          ),
+          1
+        )
       }
       .x
-    })
+    }
+  )
 
   suppressMessages(newdata %>% left_join(joindata))
-
 }
