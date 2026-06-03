@@ -6,10 +6,14 @@
 # risks, that the multiple-imputation (MI) workflow in pammtools
 # (pamm_ic / pamm_ic_cr) improves on naive single midpoint imputation:
 #
-#   (A) CONFIDENCE-INTERVAL COVERAGE of model terms and of functionals
-#       (survival S(t), cumulative incidence CIF_k(t)) is restored to ~nominal,
-#       whereas midpoint imputation under-covers (it ignores the uncertainty
-#       about the unobserved exact event times).
+#   (A) CONFIDENCE-INTERVAL COVERAGE of the time-dependent functionals that
+#       practitioners report -- survival S(t) and cumulative incidence CIF_k(t)
+#       -- is restored to ~nominal by MI, whereas naive midpoint imputation
+#       badly under-covers (it ignores the uncertainty about the unobserved
+#       exact event times), increasingly so as inspection intervals lengthen.
+#       The covariate-effect (slope) CIs, by contrast, are ~nominal under BOTH
+#       methods: the regression slope is robust to interval censoring; the
+#       information loss falls on the time dimension (baseline / S(t) / CIF).
 #   (B) POINT ESTIMATES are no worse than midpoint and improve under heavy
 #       interval censoring (long inspection intervals), approaching the
 #       (unattainable) "oracle" fit on the exact event times.
@@ -258,13 +262,20 @@ run_grid <- function(fun, n, tag) {
   bind_rows(res)
 }
 
-t0 <- Sys.time()
-res_se <- run_grid(one_rep_single, 300, "single")
-res_cr <- run_grid(one_rep_cr,     450, "cr")
-res <- bind_rows(res_se, res_cr)
-saveRDS(res, file.path(FIGDIR, "ic-sim-raw.rds"))
-cat(sprintf("Done in %.1f min; %d result rows.\n",
-  as.numeric(difftime(Sys.time(), t0, units = "mins")), nrow(res)))
+RAW <- file.path(FIGDIR, "ic-sim-raw.rds")
+if (nzchar(Sys.getenv("IC_REUSE")) && file.exists(RAW)) {
+  res <- readRDS(RAW)
+  cat(sprintf("Reusing cached raw results (%d rows); regenerating figures only.\n",
+    nrow(res)))
+} else {
+  t0 <- Sys.time()
+  res_se <- run_grid(one_rep_single, 300, "single")
+  res_cr <- run_grid(one_rep_cr,     450, "cr")
+  res <- bind_rows(res_se, res_cr)
+  saveRDS(res, RAW)
+  cat(sprintf("Done in %.1f min; %d result rows.\n",
+    as.numeric(difftime(Sys.time(), t0, units = "mins")), nrow(res)))
+}
 
 # ---- aggregate ------------------------------------------------------------
 agg <- res %>%
@@ -279,99 +290,79 @@ agg <- res %>%
     .groups  = "drop") %>%
   mutate(method = factor(method, levels = c("oracle", "MI", "midpoint")))
 write.csv(agg, file.path(FIGDIR, "ic-sim-summary.csv"), row.names = FALSE)
-cat("\n==== coverage of model terms (target 0.95) ====\n")
-print(as.data.frame(agg %>% filter(grepl("beta", quantity)) %>%
+show_cov <- function(keep) print(as.data.frame(agg %>% filter(keep) %>%
   mutate(mean_int = round(mean_int, 2), coverage = round(coverage, 3)) %>%
-  select(task, quantity, method, mean_int, coverage)), row.names = FALSE)
+  arrange(task, quantity, desc(mean_int), method) %>%
+  select(task, quantity, mean_int, method, coverage)), row.names = FALSE)
+cat("\n==== coverage of FUNCTIONALS S(t)/CIF (target 0.95) ====\n")
+cat("    [headline: midpoint under-covers under heavy IC; MI tracks the oracle]\n")
+show_cov(!grepl("beta", agg$quantity))
+cat("\n==== coverage of covariate TERMS (target 0.95) ====\n")
+cat("    [the slope is robust to IC: all methods ~nominal]\n")
+show_cov(grepl("beta", agg$quantity))
 
 # ---- figures --------------------------------------------------------------
 cols <- c(oracle = "#1b9e77", MI = "#1f78b4", midpoint = "#e31a1c")
 lab_task <- c(single = "Single event", cr = "Competing risks")
+# facet_wrap (not facet_grid) so empty task x quantity combinations are dropped
+fwrap <- function(...) facet_wrap(vars(task, quantity), ...,
+  labeller = labeller(task = lab_task, quantity = label_parsed))
 
-# Fig 1: coverage of TERMS vs inspection-interval length
-p_term <- agg %>% filter(grepl("beta", quantity)) %>%
-  ggplot(aes(mean_int, coverage, colour = method)) +
-  geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
-  geom_line() + geom_point(size = 2) +
-  facet_grid(task ~ quantity, labeller = labeller(task = lab_task,
-    quantity = label_parsed)) +
-  scale_colour_manual(values = cols) +
-  coord_cartesian(ylim = c(0.5, 1)) +
-  labs(x = "mean inspection-interval length", y = "95% CI coverage",
-    colour = NULL,
-    title = "Coverage of covariate effects: MI restores nominal coverage",
-    subtitle = "midpoint imputation under-covers; MI tracks the oracle")
-ggsave(file.path(FIGDIR, "fig1-term-coverage.png"), p_term,
-  width = 8, height = 6, dpi = 130)
-
-# Fig 2: coverage of FUNCTIONALS S(t)/CIF (averaged over evaluation times)
+# Fig 1 (HEADLINE): coverage of FUNCTIONALS S(t)/CIF vs inspection-interval length
 p_fun <- agg %>% filter(!grepl("beta", quantity)) %>%
   ggplot(aes(mean_int, coverage, colour = method)) +
   geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
   geom_line() + geom_point(size = 2) +
-  facet_grid(task ~ quantity, labeller = labeller(task = lab_task,
-    quantity = label_parsed), scales = "free_x") +
+  fwrap(nrow = 1, scales = "free_x") +
   scale_colour_manual(values = cols) +
   coord_cartesian(ylim = c(0.5, 1)) +
   labs(x = "mean inspection-interval length", y = "95% CI coverage (avg over t)",
-    colour = NULL, title = "Coverage of S(t) and CIF_k(t)")
-ggsave(file.path(FIGDIR, "fig2-functional-coverage.png"), p_fun,
-  width = 9, height = 6, dpi = 130)
+    colour = NULL,
+    title = "MI restores near-nominal coverage of S(t) and CIF; midpoint under-covers",
+    subtitle = "degradation worsens as inspection intervals lengthen; MI tracks the oracle")
+ggsave(file.path(FIGDIR, "fig1-functional-coverage.png"), p_fun,
+  width = 10, height = 4.2, dpi = 130)
 
-# Fig 3: point-estimate error (RMSE) vs inspection-interval length
+# Fig 2: coverage of the covariate TERMS (robust to IC under both methods)
+p_term <- agg %>% filter(grepl("beta", quantity)) %>%
+  ggplot(aes(mean_int, coverage, colour = method)) +
+  geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+  geom_line() + geom_point(size = 2) +
+  fwrap(nrow = 1) +
+  scale_colour_manual(values = cols) +
+  coord_cartesian(ylim = c(0.5, 1)) +
+  labs(x = "mean inspection-interval length", y = "95% CI coverage",
+    colour = NULL,
+    title = "Covariate-effect coverage is maintained by all methods",
+    subtitle = "the regression slope is barely affected by interval censoring")
+ggsave(file.path(FIGDIR, "fig2-term-coverage.png"), p_term,
+  width = 10, height = 4.2, dpi = 130)
+
+# Fig 3: point-estimate error (RMSE) of functionals vs inspection-interval length
 p_rmse <- agg %>% filter(!grepl("beta", quantity)) %>%
   ggplot(aes(mean_int, rmse, colour = method)) +
   geom_line() + geom_point(size = 2) +
-  facet_grid(task ~ quantity, labeller = labeller(task = lab_task,
-    quantity = label_parsed), scales = "free") +
+  fwrap(nrow = 1, scales = "free") +
   scale_colour_manual(values = cols) +
   labs(x = "mean inspection-interval length", y = "RMSE of point estimate",
     colour = NULL,
     title = "Point-estimate accuracy: MI <= midpoint, improving under heavy IC",
     subtitle = "both approach the oracle; gap to midpoint widens as intervals lengthen")
 ggsave(file.path(FIGDIR, "fig3-point-rmse.png"), p_rmse,
-  width = 9, height = 6, dpi = 130)
+  width = 10, height = 4.2, dpi = 130)
 
-# Fig 4: CI width (the honest flip-side: MI is wider than midpoint)
-p_w <- agg %>% filter(grepl("beta", quantity)) %>%
+# Fig 4: functional CI width -- the MECHANISM behind the coverage gap:
+# midpoint bands are too narrow (ignore imputation uncertainty); MI widens them.
+p_w <- agg %>% filter(!grepl("beta", quantity)) %>%
   ggplot(aes(mean_int, width, colour = method)) +
   geom_line() + geom_point(size = 2) +
-  facet_grid(task ~ quantity, labeller = labeller(task = lab_task,
-    quantity = label_parsed)) +
+  fwrap(nrow = 1, scales = "free") +
   scale_colour_manual(values = cols) +
   labs(x = "mean inspection-interval length", y = "mean 95% CI width",
-    colour = NULL, title = "CI width: MI is wider than midpoint (it must be)")
-ggsave(file.path(FIGDIR, "fig4-term-width.png"), p_w,
-  width = 8, height = 6, dpi = 130)
-
-# Fig 5: illustrative single data set (heavy IC) -- S(t) and CIF_1(t) with CIs
-set.seed(99)
-d_il  <- data.frame(id = 1:400, x = runif(400, -1, 1))
-sd_il <- sim_pexp(SIM_SE, d_il, cut = FINE)
-ic_il <- add_inspections(sd_il, rate = 0.3, max_time = HORIZON)
-f_il  <- Surv(L, R, type = "interval2") ~ x
-fit_il <- suppressWarnings(pamm_ic(f_il, ic_il, cut = CUT, m = M))
-ic_il$tm <- mid_time(ic_il$L, ic_il$R); ic_il$ev <- ev_from_R(ic_il$R)
-mid_il <- suppressWarnings(pamm(ped_status ~ s(tend) + x,
-  data = as_ped(ic_il[ic_il$tm > 0, ], Surv(tm, ev) ~ x, cut = CUT)))
-g_il  <- grid_single()
-sMI <- add_surv_prob(g_il, fit_il, nsim = 500) %>%
-  transmute(tend, method = "MI", est = surv_prob, lo = surv_lower, hi = surv_upper)
-sMD <- add_surv_prob(g_il, mid_il, ci_type = "sim", nsim = 500) %>%
-  transmute(tend, method = "midpoint", est = surv_prob, lo = surv_lower, hi = surv_upper)
-truthdf <- data.frame(tend = g_il$tend, truth = S_se(g_il$tend, 0))
-p_il <- bind_rows(sMI, sMD) %>%
-  ggplot(aes(tend, est, colour = method, fill = method)) +
-  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.18, colour = NA) +
-  geom_line() +
-  geom_line(data = truthdf, aes(tend, truth), colour = "black",
-    linetype = 2, inherit.aes = FALSE) +
-  scale_colour_manual(values = cols[c("MI", "midpoint")]) +
-  scale_fill_manual(values = cols[c("MI", "midpoint")]) +
-  labs(x = "time", y = "S(t)", colour = NULL, fill = NULL,
-    title = "One heavy-IC data set: MI 95% band covers the truth (dashed)",
-    subtitle = "midpoint band is narrower and can miss the truth")
-ggsave(file.path(FIGDIR, "fig5-illustrative-survival.png"), p_il,
-  width = 7, height = 5, dpi = 130)
+    colour = NULL,
+    title = "Why midpoint under-covers: its S(t)/CIF bands are too narrow",
+    subtitle = "MI widens the bands to reflect imputation uncertainty (oracle = exact times)")
+ggsave(file.path(FIGDIR, "fig4-functional-width.png"), p_w,
+  width = 10, height = 4.2, dpi = 130)
 
 cat("\nFigures written to ", normalizePath(FIGDIR), "\n", sep = "")
