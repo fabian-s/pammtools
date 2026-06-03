@@ -42,11 +42,23 @@ coverage studies.
 
 **`cut` is resolved exactly once and shared across all `M` imputations.** If breaks
 were re-derived per imputation (the `get_cut(cut = NULL)` default keys off observed
-event times), the `s(tend)` spline basis would differ across fits, coefficient
-vectors would not be conformable, and the pooled-draws approach would be invalid.
-With a fixed `cut`, `predict.gam(fit_m, newdata, type = "lpmatrix")` returns an
-**identical `X`** for every fit `m` — the precondition the whole design rests on.
-This must have a dedicated unit test.
+event times), the interval structure would differ across fits and pooling would be
+ill-defined. The IC pipeline freezes `cut` in `as_ped_ic`/`pamm_ic` and passes it to
+every `split_data`/`as_ped_cr` call.
+
+> **Implementation correction (verified empirically, R available).** The plan
+> originally assumed a fixed `cut` also makes the design matrix
+> `predict.gam(fit_m, newdata, "lpmatrix")` *identical* across fits, so pooled draws
+> could share one `X`. **This is false:** mgcv's identifiability centering (and
+> thin-plate knot placement) makes the *constrained* spline basis depend on each
+> imputed data set, so `X` differs across fits (`max|X_1 - X_m| > 0`, confirmed).
+> The pooling layer was therefore built to propagate **each fit's draws through its
+> own design matrix** (`ic_ci_draws`, `ic_cif_draws_group` in `R/pool-ic.R`) and pool
+> the resulting functional draws — the statistically correct approach, needing no
+> shared-`X` assumption. Point estimates are the average of per-fit point predictions
+> (the MI estimate). The sampler's calibration is verified by a probability-integral-
+> transform KS test; a coverage study confirms MI widens intervals and restores
+> coverage relative to naive midpoint imputation.
 
 ---
 

@@ -1,0 +1,126 @@
+---
+title: "Interval-Censored Data"
+author: "pammtools"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Interval-Censored Data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, echo = FALSE}
+library(knitr)
+opts_chunk$set(
+  fig.align  = "center",
+  cache      = FALSE,
+  message    = FALSE,
+  warning    = FALSE,
+  fig.height = 4,
+  fig.width  = 6
+)
+```
+
+```{r, message = FALSE}
+library(pammtools)
+library(dplyr)
+library(ggplot2)
+```
+
+## Background
+
+In many studies the event time is not observed exactly but only known to lie in
+an interval $(L_i, R_i]$ -- for example because subjects are examined at a
+sequence of *inspection times* and we only learn that the event happened between
+the last clean and the first positive visit. This is **interval censoring**.
+
+A piecewise-exponential additive model (PAMM) assumes a piecewise-constant
+hazard, so the conditional distribution of the event time within $(L_i, R_i]$ is
+known in closed form. `pammtools` exploits this with a **multiple imputation
+(MI)** strategy (cf. Pan, 2000; Delord & Génin, 2016): exact event times are
+repeatedly drawn from $p(T \mid L_i < T \le R_i, x_i, \theta)$, each completed
+data set is transformed and re-fit with the *standard* right-censored pipeline,
+and the fits are pooled for inference. Naive midpoint imputation, by contrast,
+typically yields reasonable point estimates but invalid (too narrow) confidence
+intervals.
+
+Interval-censored data are specified through the usual **survival** interface,
+`Surv(L, R, type = "interval2")`, where `L == R` denotes an exact time,
+`R == Inf` a right-censored observation, `L == 0` a left-censored one, and
+`0 < L < R < Inf` a genuine interval.
+
+## Simulating interval-censored data
+
+`add_inspections()` turns exact simulated times (here from `sim_pexp()`) into
+interval-censored panel data by drawing per-subject inspection times. The true
+event time is retained in `true_time` so we can check our work.
+
+```{r}
+set.seed(2024)
+df  <- data.frame(x = runif(300, -1, 1))
+sdf <- sim_pexp(~ -2 + 0.5 * x, df, cut = seq(0, 10, by = 0.1))
+icd <- add_inspections(sdf, rate = 0.75, max_time = 10)
+icd %>% select(id, x, true_time, L, R) %>% head()
+```
+
+## Fitting a PAMM by multiple imputation
+
+`pamm_ic()` runs the whole MI workflow: an initial midpoint fit, then `m`
+rounds of (proper) imputation and re-fitting on a fixed interval grid.
+
+```{r}
+fit <- pamm_ic(
+  Surv(L, R, type = "interval2") ~ x,
+  data = icd,
+  cut  = seq(0, 10, by = 0.5),
+  m    = 10
+)
+fit
+```
+
+Each element of `fit$fits` is an ordinary `pamm` object, but the pooled
+`add_*()` methods do the right thing automatically: they combine the
+per-imputation posterior draws so the intervals reflect both within- and
+between-imputation uncertainty.
+
+```{r}
+ped <- as_ped(icd, Surv(L, R, type = "interval2") ~ x, cut = seq(0, 10, by = 0.5))
+nd  <- make_newdata(ped, tend = unique(tend))
+
+surv <- add_surv_prob(nd, fit)
+ggplot(surv, aes(x = tend, y = surv_prob)) +
+  geom_step() +
+  geom_stepribbon(aes(ymin = surv_lower, ymax = surv_upper), alpha = 0.2) +
+  labs(x = "time", y = "S(t)", title = "Pooled survival probability (MI)")
+```
+
+The same applies to `add_hazard()` and `add_cumu_hazard()`.
+
+## Competing risks
+
+When several competing causes are present, `pamm_ic_cr()` draws the event time
+from the all-cause conditional hazard and assigns a cause (observed causes are
+retained; unknown causes are sampled in proportion to the cause-specific
+hazards). Cumulative incidence functions are obtained with `add_cif()`.
+
+```{r, eval = FALSE}
+icd$cause <- with(icd, ifelse(true_time <= 10,
+  sample(c(1, 2), nrow(icd), TRUE, c(.6, .4)), 0))
+fit_cr <- pamm_ic_cr(Surv(L, R, type = "interval2") ~ x, icd,
+  cause = "cause", cut = seq(0, 10, by = 0.5), m = 10)
+nd_cr  <- make_newdata(ped_cr, tend = unique(tend), cause = unique(cause)) |>
+  group_by(cause)
+add_cif(nd_cr, fit_cr)
+```
+
+## Notes and limitations
+
+* The interval cut-points are fixed once and shared across all imputations; this
+  is required for the imputations to be poolable.
+* `proper = TRUE` (the default) draws the imputation-model coefficients from
+  their posterior before each imputation; this is what makes the pooled
+  intervals calibrated. `proper = FALSE` is for diagnostics only.
+* Recurrent-event and general multi-state interval censoring are not yet
+  supported: imputing one transition time changes the at-risk window for the
+  next, so the imputations must be drawn jointly along each subject's path -- a
+  planned extension.
