@@ -3,6 +3,7 @@ title: "Interval-Censored Data"
 author: "pammtools"
 date: "`r Sys.Date()`"
 output: rmarkdown::html_vignette
+bibliography: Remote.bib
 vignette: >
   %\VignetteIndexEntry{Interval-Censored Data}
   %\VignetteEngine{knitr::rmarkdown}
@@ -37,12 +38,15 @@ the last clean and the first positive visit. This is **interval censoring**.
 A piecewise-exponential additive model (PAMM) assumes a piecewise-constant
 hazard, so the conditional distribution of the event time within $(L_i, R_i]$ is
 known in closed form. `pammtools` exploits this with a **multiple imputation
-(MI)** strategy (cf. Pan, 2000; Delord & Génin, 2016): exact event times are
+(MI)** strategy [@pan2000; @delord2016]: exact event times are
 repeatedly drawn from $p(T \mid L_i < T \le R_i, x_i, \theta)$, each completed
 data set is transformed and re-fit with the *standard* right-censored pipeline,
-and the fits are pooled for inference. Naive midpoint imputation, by contrast,
-typically yields reasonable point estimates but invalid (too narrow) confidence
-intervals.
+and the fits are pooled for inference following Rubin's rules [@rubin1987].
+Naive midpoint imputation, by contrast, typically yields reasonable point
+estimates but invalid (too narrow) confidence intervals. Related model-based
+imputation schemes for the interval-censored hazard are discussed by
+@bebchuk2000; the `icenReg` package [@andersonbergman2017] provides
+non-parametric and parametric alternatives that are useful as a cross-check.
 
 Interval-censored data are specified through the usual **survival** interface,
 `Surv(L, R, type = "interval2")`, where `L == R` denotes an exact time,
@@ -124,3 +128,5 @@ add_cif(nd_cr, fit_cr)
   supported: imputing one transition time changes the at-risk window for the
   next, so the imputations must be drawn jointly along each subject's path -- a
   planned extension.
+
+## References
