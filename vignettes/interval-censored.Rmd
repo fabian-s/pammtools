@@ -38,7 +38,7 @@ the last clean and the first positive visit. This is **interval censoring**.
 A piecewise-exponential additive model (PAMM) assumes a piecewise-constant
 hazard, so the conditional distribution of the event time within $(L_i, R_i]$ is
 known in closed form. `pammtools` exploits this with a **multiple imputation
-(MI)** strategy [@pan2000; @delord2016]: exact event times are
+(MI)** strategy [@pan2000]: exact event times are
 repeatedly drawn from $p(T \mid L_i < T \le R_i, x_i, \theta)$, each completed
 data set is transformed and re-fit with the *standard* right-censored pipeline,
 and the fits are pooled for inference following Rubin's rules [@rubin1987].
@@ -102,10 +102,15 @@ The same applies to `add_hazard()` and `add_cumu_hazard()`.
 
 ## Competing risks
 
-When several competing causes are present, `pamm_ic_cr()` draws the event time
-from the all-cause conditional hazard and assigns a cause (observed causes are
-retained; unknown causes are sampled in proportion to the cause-specific
-hazards). Cumulative incidence functions are obtained with `add_cif()`.
+With $K$ competing causes, `pamm_ic_cr()` imputes both the event time and the
+cause from a fitted **cause-specific** PAMM, and re-fits cause-specific hazards;
+cumulative incidence functions are then obtained from those hazards with
+`add_cif()`. Note that this targets cause-specific hazards (and CIFs derived from
+them), and so differs from @delord2016, who develop MI for interval-censored
+competing risks in the **subdistribution-hazard** (Fine--Gray) framework; the
+scheme here is the cause-specific analogue. Because we impute from a
+cause-specific model and analyse with one, the imputation and analysis models are
+congenial.
 
 ```{r, eval = FALSE}
 icd$cause <- with(icd, ifelse(true_time <= 10,
@@ -116,6 +121,48 @@ nd_cr  <- make_newdata(ped_cr, tend = unique(tend), cause = unique(cause)) |>
   group_by(cause)
 add_cif(nd_cr, fit_cr)
 ```
+
+### How the time and cause are imputed
+
+For a subject known to fail from cause $k$ in $(L, R]$, the correct conditional
+density of the event time is the cause-$k$ *sub-density*, restricted to the
+interval,
+$$
+p(t \mid L < T \le R,\ \text{cause}=k) \;\propto\; f_k(t) = h_k(t)\,S(t),
+\qquad
+S(t) = \exp\!\Big(-\textstyle\int_0^t h_\bullet(u)\,du\Big),
+$$
+where $h_\bullet = \sum_j h_j$ is the **all-cause** hazard. The all-cause hazard
+is unavoidable here: to fail from cause $k$ *at* $t$, the subject must first
+survive *all* causes up to $t$ (hence the all-cause survival $S$) and then fail
+from cause $k$ (hence $h_k$). Drawing instead from a "cause-$k$-only" law
+$h_k(t)\exp(-\int h_k)$ would be the classic net/latent-time error -- it ignores
+that a competing cause may remove the subject before $t$, biasing imputed times
+too late.
+
+The all-cause *conditional* CDF inverts in closed form on the piecewise grid
+(it is just the single-event sampler applied to $S = \exp(-H_\bullet)$), whereas
+$f_k(t) = h_k(t)S(t)$ has no equally clean inverse. So `pamm_ic_cr()` uses the
+all-cause conditional only as an easy-to-invert **proposal** and then **accepts**
+the draw with probability $h_k(t)/h_\bullet(t) \le 1$. The accepted draws are
+proportional to (proposal) $\times$ (acceptance) $= h_\bullet(t)S(t)\cdot
+h_k(t)/h_\bullet(t) \propto h_k(t)S(t) = f_k(t)$ -- exactly the target; the
+$h_\bullet$ cancels. For an **unknown** cause the same machinery is read the
+other way: the time is drawn from the all-cause conditional and the cause is
+then sampled with probability $h_k(t)/h_\bullet(t)$, the same
+`hazard / total_hazard` ratio used to build CIF increments in `add_cif()`.
+
+Two consequences are worth noting:
+
+* If the cause-specific hazards are proportional ($h_k/h_\bullet$ constant over
+  time) the acceptance is uniform and the all-cause conditional already *equals*
+  the cause-$k$ conditional -- the rejection step is a no-op. It only matters
+  when the cause mix shifts over follow-up (e.g. one cause dominates early,
+  another late), which is exactly when cause-$k$ times need to be re-weighted.
+* For a **rare** cause $h_k/h_\bullet$ is small everywhere, so acceptance is low;
+  the sampler caps the number of tries and falls back to the last proposal, which
+  can introduce a slight bias. For strongly imbalanced causes a direct inversion
+  of the cause-$k$ sub-cumulative would be more robust -- a possible refinement.
 
 ## Notes and limitations
 
