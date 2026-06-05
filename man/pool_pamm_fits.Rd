@@ -4,13 +4,17 @@
 \alias{pool_pamm_fits}
 \title{Pool a list of (stripped) imputation fits into a single pooled fit}
 \usage{
-pool_pamm_fits(fits, smry)
+pool_pamm_fits(fits, smry, skeleton = NULL)
 }
 \arguments{
 \item{fits}{List of stripped imputation fits.}
 
 \item{smry}{List of \code{summary.gam} objects, one per fit (computed before
 stripping).}
+
+\item{skeleton}{Optional full (unstripped) fit to use as the pooled-fit
+skeleton; it carries the model frame and other slots that \code{plot.gam()}
+and friends need. Defaults to the first (stripped) fit.}
 }
 \description{
 Combines the \code{m} imputation fits with Rubin's rules: the pooled

@@ -142,16 +142,22 @@ test_that("pamm_ic resolves dot formulas before fitting", {
 
 test_that("pamm_ic stores slimmed fits and a pooled fit", {
   icd <- make_ic_data(250, seed = 4)
-  fit <- pamm_ic(Surv(L, R, type = "interval2") ~ x, icd,
-    cut = seq(0, 10, by = 0.5), m = 10)
+  fit <- pamm_ic(
+    Surv(L, R, type = "interval2") ~ x,
+    icd,
+    cut = seq(0, 10, by = 0.5),
+    m = 10
+  )
 
   # fits are slimmed: no per-observation slots, but predict/coef/vcov still work
   expect_null(fit$fits[[1]]$model)
   expect_null(fit$fits[[1]]$residuals)
   expect_true(!is.null(coef(fit$fits[[1]])))
   expect_equal(dim(vcov(fit$fits[[1]])), rep(length(coef(fit$fits[[1]])), 2))
-  nd <- make_newdata(as_ped(icd, Surv(L, R, type = "interval2") ~ x,
-    cut = seq(0, 10, by = 0.5)), tend = unique(tend))
+  nd <- make_newdata(
+    as_ped(icd, Surv(L, R, type = "interval2") ~ x, cut = seq(0, 10, by = 0.5)),
+    tend = unique(tend)
+  )
   expect_silent(predict(fit$fits[[1]], nd, type = "lpmatrix"))
 
   # pooled object: Rubin-combined coef/Vp + tables + diagnostics
@@ -166,10 +172,17 @@ test_that("pamm_ic stores slimmed fits and a pooled fit", {
 
 test_that("print/summary report the pooled fit", {
   icd <- make_ic_data(200, seed = 6)
-  fit <- pamm_ic(Surv(L, R, type = "interval2") ~ x, icd,
-    cut = seq(0, 10, by = 0.5), m = 5)
+  fit <- pamm_ic(
+    Surv(L, R, type = "interval2") ~ x,
+    icd,
+    cut = seq(0, 10, by = 0.5),
+    m = 5
+  )
   expect_output(print(fit), "interval-censored")
-  expect_output(print(fit), "Pooled parametric coefficients")
+  expect_output(print(fit), "via multiple imputation")
+  # print() is a compact header only; the coefficient tables live in summary()
+  expect_output(print(fit), "Use summary\\(\\)")
+  expect_failure(expect_output(print(fit), "Pooled parametric coefficients"))
   s <- summary(fit)
   expect_s3_class(s, "summary.pamm_ic")
   expect_true(!is.null(s$p.table) && !is.null(s$s.table))

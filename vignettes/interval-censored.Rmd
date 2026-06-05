@@ -24,6 +24,7 @@ opts_chunk$set(
 
 ```{r, message = FALSE}
 library(pammtools)
+library(survival)
 library(dplyr)
 library(ggplot2)
 ```
@@ -56,15 +57,33 @@ Interval-censored data are specified through the usual **survival** interface,
 ## Simulating interval-censored data
 
 `add_inspections()` turns exact simulated times (here from `sim_pexp()`) into
-interval-censored panel data by drawing per-subject inspection times. The true
+interval-censored panel data by drawing (per-subject, by default) inspection times. The true
 event time is retained in `true_time` so we can check our work.
 
+Here a binary covariate `trt` (think treatment vs.\ control) acts through a
+*time-varying* effect. The control group (`trt == 0`) has a log-hazard that rises
+linearly in time; relative to it the treated group carries the log-hazard ratio
+`1.2 - 0.3 * t`, which starts clearly *harmful* and crosses zero at `t = 4`,
+turning protective thereafter. The group hazards -- and hence the survival curves
+-- therefore cross, a clear departure from proportional hazards. Because factors
+enter the (numeric) linear predictor directly, the treatment effect is written
+with an explicit indicator `(trt == 1)`.
+
+The inspection `rate` controls how much information the interval censoring
+destroys. A dense grid pins each event down tightly and leaves little to impute;
+a sparse grid brackets events only loosely, which is exactly where proper
+multiple imputation pays off over naive midpoint imputation. We deliberately pick
+a fairly sparse schedule here (`rate = 0.5`, mean inter-inspection gap $2$) so
+that the imputation uncertainty is appreciable, while keeping $n = 500$ so the
+time-varying effect is still recovered reasonably well.
+
 ```{r}
-set.seed(2024)
-df  <- data.frame(x = runif(300, -1, 1))
-sdf <- sim_pexp(~ -2 + 0.5 * x, df, cut = seq(0, 10, by = 0.1))
-icd <- add_inspections(sdf, rate = 0.75, max_time = 10)
-icd %>% select(id, x, true_time, L, R) %>% head()
+set.seed(3)
+df  <- data.frame(trt = rbinom(500, 1, 0.5) |> as.factor())
+sdf <- sim_pexp(~ -2.5 + 0.2 * t + (1.2 - 0.3 * t) * (trt == 1), df,
+                cut = seq(0, 10, by = 0.1))
+icd <- add_inspections(sdf, rate = 0.5, max_time = 10)
+icd %>% select(id, trt, true_time, L, R) %>% head()
 ```
 
 ## Fitting a PAMM by multiple imputation
@@ -72,24 +91,30 @@ icd %>% select(id, x, true_time, L, R) %>% head()
 `pamm_ic()` runs the whole MI workflow: an initial midpoint fit, then `m`
 rounds of (proper) imputation and re-fitting on a fixed interval grid.
 
+We give each group its own smooth log-baseline-hazard via `s(tend, by = trt)`
+(a factor `by`-variable yields one centred smooth per level) plus the parametric
+`trt` main effect for the overall level difference between groups.
+
 ```{r}
 fit <- pamm_ic(
-  Surv(L, R, type = "interval2") ~ x,
-  data = icd,
-  cut  = seq(0, 10, by = 0.5),
-  m    = 10
+  Surv(L, R, type = "interval2") ~ trt,
+  data          = icd,
+  model_formula = ped_status ~ trt + s(tend, by = trt),
+  cut           = seq(0, 10, by = 0.5),
+  m             = 20
 )
 fit
 ```
 
-`print()` and `summary()` report the **pooled** fit: coefficients and
-covariances are combined with Rubin's rules (so the reported standard errors
-include the between-imputation variability), term p-values use the median-p
-rule [@bolt2022], and `summary()` additionally reports the fraction of
-missing information induced by the interval censoring.
+`print()` gives a compact overview; `summary()` reports the **pooled** fit:
+coefficients and covariances are combined with Rubin's rules (so the reported
+standard errors include the between-imputation variability), term p-values use
+the median-p rule [@bolt2022], and the fraction of missing information induced
+by the interval censoring is reported as well.
 
 ```{r}
 summary(fit)
+plot(fit$pooled, pages= 1)
 ```
 
 The `m` imputation fits are stored in `fit$fits` in a slimmed form (the
@@ -99,18 +124,114 @@ below operate on the imputation fits directly: they combine the per-imputation
 posterior draws so the intervals reflect both within- and between-imputation
 uncertainty.
 
-```{r}
-ped <- as_ped(icd, Surv(L, R, type = "interval2") ~ x, cut = seq(0, 10, by = 0.5))
-nd  <- make_newdata(ped, tend = unique(tend))
+We compare two PAMM estimates per group. The **MI** estimate pools the imputation
+fits, so its intervals carry both the within-fit and the between-imputation
+uncertainty. The **midpoint** estimate is the initialiser fit (`fit$init_fit`):
+a single PAMM fit to the interval midpoints, which treats those imputed times as
+if observed. We request **simulation-based** intervals (`ci_type = "sim"`) for the
+midpoint fit so that both estimates use the same (proper) interval machinery as
+the pooled `pamm_ic` methods -- the pooled methods always simulate from each fit's
+posterior, so this is a like-for-like comparison that differs only by the
+between-imputation variance. (The default `ci_type = "default"` instead cumulates
+the pointwise hazard limits, which yields a noticeably more conservative band.)
 
-surv <- add_surv_prob(nd, fit)
-ggplot(surv, aes(x = tend, y = surv_prob)) +
-  geom_step() +
-  geom_stepribbon(aes(ymin = surv_lower, ymax = surv_upper), alpha = 0.2) +
-  labs(x = "time", y = "S(t)", title = "Pooled survival probability (MI)")
+```{r}
+ped <- as_ped(icd, Surv(L, R, type = "interval2") ~ trt, cut = seq(0, 10, by = 0.5))
+nd  <- make_newdata(ped, tend = unique(tend), trt = unique(trt)) %>% group_by(trt)
+
+# midpoint = initialiser fit (single completed data set, no imputation uncertainty)
+set.seed(1)   # the simulation-based intervals draw from each fit's posterior
+surv_mid   <- add_surv_prob(nd, fit$init_fit, ci_type = "sim", nsim = 1000)
+surv_mi    <- add_surv_prob(nd, fit, nsim = 1000)
+hazard_mid <- add_hazard(nd, fit$init_fit, ci_type = "sim", nsim = 1000)
+hazard_mi  <- add_hazard(nd, fit, nsim = 1000)
 ```
 
-The same applies to `add_hazard()` and `add_cumu_hazard()`.
+As a non-parametric cross-check we add the **Turnbull** estimator -- the NPMLE of
+the survival function for interval-censored data -- computed per group.
+`survival::survfit()` runs the Turnbull EM algorithm when handed an `interval2`
+response and returns pointwise confidence limits.
+
+```{r}
+tb    <- survfit(Surv(L, R, type = "interval2") ~ trt, data = icd)
+tb_df <- data.frame(
+  tend  = tb$time,
+  surv  = tb$surv,
+  lower = tb$lower,
+  upper = tb$upper,
+  trt   = factor(rep(c(0, 1), tb$strata))   # strata are ordered trt = 0, then 1
+)
+```
+
+All three recover the crossing survival curves reasonably well. The midpoint
+intervals are the tightest -- they ignore the imputation uncertainty and are
+therefore over-confident; the MI intervals are wider (the censoring here induces
+a sizeable fraction of missing information, see `summary(fit)` above), and the
+non-parametric Turnbull intervals are wider and more jagged still.
+
+```{r, fig.width = 9, fig.height = 3.6}
+prep <- function(d, method) {
+  transmute(d, tend, trt = factor(trt),
+    surv = surv_prob, lower = surv_lower, upper = surv_upper, method = method)
+}
+surv_all <- bind_rows(
+  prep(surv_mid, "PAMM (midpoint)"),
+  prep(surv_mi,  "PAMM (MI)"),
+  transmute(tb_df, tend, trt, surv, lower, upper, method = "Turnbull"))
+surv_all$method <- factor(surv_all$method,
+  levels = c("PAMM (midpoint)", "PAMM (MI)", "Turnbull"))
+
+ggplot(surv_all, aes(x = tend, y = surv, color = trt, fill = trt)) +
+  geom_stepribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
+  geom_step() +
+  facet_grid(~ method) +
+  scale_color_viridis_d(end = 0.8, aesthetics = c("colour", "fill")) +
+  labs(x = "time", y = "S(t)", color = "trt", fill = "trt",
+    title = "Interval-censored S(t): midpoint vs. multiple imputation vs. Turnbull")
+```
+
+The over-confidence of the midpoint fit is easy to quantify -- the average width
+of the pointwise survival intervals:
+
+```{r}
+c(midpoint = mean(surv_mid$surv_upper - surv_mid$surv_lower),
+  MI       = mean(surv_mi$surv_upper  - surv_mi$surv_lower)) %>% round(3)
+```
+
+The effect is more visible on the **hazard** scale, which depends directly on
+exact event timing which interval censoring leaves more uncertain. Overlaying
+the two methods within each group shows the MI hazard bands enveloping
+the (over-confident) midpoint-based bands, while the point estimates mostly agree:
+
+```{r, fig.width = 8, fig.height = 4}
+haz_all <- bind_rows(
+  mutate(hazard_mid, method = "PAMM (midpoint)"),
+  mutate(hazard_mi,  method = "PAMM (MI)")) %>%
+  mutate(trt = paste0("trt = ", trt),
+    method = factor(method, levels = c("PAMM (midpoint)", "PAMM (MI)")))
+
+ggplot(haz_all, aes(x = tend, y = hazard, color = method, fill = method)) +
+  geom_stepribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, color = NA) +
+  geom_step() +
+  facet_wrap(~ trt) +
+  scale_color_viridis_d(end = 0.7, aesthetics = c("colour", "fill"), option = "E") +
+  labs(x = "time", y = "hazard rate", color = NULL, fill = NULL,
+    title = "Conditional hazard rate: midpoint vs. multiple imputation")
+```
+
+Averaged over the grid, the MI hazard intervals are appreciably wider:
+
+```{r}
+c(midpoint = mean(hazard_mid$ci_upper - hazard_mid$ci_lower),
+  MI       = mean(hazard_mi$ci_upper  - hazard_mi$ci_lower)) %>% round(3)
+```
+
+So the imputation uncertainty inflates the hazard intervals more than the
+survival intervals: $S(t)$ aggregates the hazard over time and the group-level
+survival stays fairly well identified, whereas the hazard itself is tied directly
+to event timing -- exactly what the interval censoring leaves uncertain (cf.\ the
+large fraction of missing information reported by `summary()` above). The same
+machinery is available for `add_cumu_hazard()`.
 
 ## Competing risks
 
@@ -127,16 +248,21 @@ congenial.
 ```{r, eval = FALSE}
 icd$cause <- with(icd, ifelse(true_time <= 10,
   sample(c(1, 2), nrow(icd), TRUE, c(.6, .4)), 0))
-fit_cr <- pamm_ic_cr(Surv(L, R, type = "interval2") ~ x, icd,
+fit_cr <- pamm_ic_cr(Surv(L, R, type = "interval2") ~ trt*cause, icd,
   cause = "cause", cut = seq(0, 10, by = 0.5), m = 10)
 ped_cr <- as_ped(
   transform(icd, time = pmin(true_time, 10), status = cause),
-  Surv(time, status) ~ x,
+  Surv(time, status) ~ trt,
   cut = seq(0, 10, by = 0.5))
-nd_cr  <- make_newdata(ped_cr, tend = unique(tend), cause = unique(cause)) |>
+nd_cr  <- make_newdata(ped_cr, 
+                       tend = unique(tend), cause = unique(cause), trt = unique(trt)) |>
   group_by(cause)
-add_cif(nd_cr, fit_cr)
+add_cif(nd_cr, fit_cr) |> 
+  ggplot(aes(x = tend, y = cif, fill = cause, col = cause)) + 
+  geom_area(position = "stack") + facet_grid(~trt)
 ```
+
+Neither treatment effect nor baseline hazards are different across causes in this simple example, and this is recovered well in the estimated CIFs.
 
 ### How the time and cause are imputed
 

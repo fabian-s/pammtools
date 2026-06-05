@@ -70,10 +70,13 @@ An object of class \code{pamm_ic}: a list with
 does not scale with the number of imputations; they still support
 \code{coef}, \code{vcov} and \code{predict(type = "lpmatrix")}, which is
 all the pooled \code{add_*} methods need.}
-\item{\code{pooled}}{the pooled fit: Rubin-combined \code{coefficients},
-\code{Vp}/\code{Ve} (within- plus between-imputation variance), pooled
-parametric/smooth tables with median-p values, MI diagnostics
-(\code{riv}, \code{fmi}), and a \code{gam}-like \code{$gam} skeleton.}
+\item{\code{pooled}}{the pooled fit, itself a \code{gam}-like object (so
+\code{predict}, \code{plot}, etc.\ work on it directly) with the
+Rubin-combined \code{coefficients} and \code{Vp}/\code{Ve} (within- plus
+between-imputation variance) substituted in, plus the pooled
+parametric/smooth tables with median-p values (\code{$p.table},
+\code{$s.table}) and per-coefficient MI diagnostics (\code{$riv},
+\code{$fmi}) attached as extra elements.}
 \item{\code{init_fit}}{the (slimmed) initialiser/imputation model.}
 \item{others}{the parsed bounds \code{ic}, the shared \code{cut}, and
 metadata.}
