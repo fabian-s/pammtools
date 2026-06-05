@@ -61,26 +61,26 @@ interval-censored panel data by drawing (per-subject, by default) inspection tim
 event time is retained in `true_time` so we can check our work.
 
 Here a binary covariate `trt` (think treatment vs.\ control) acts through a
-*time-varying* effect. The control group (`trt == 0`) has a log-hazard that rises
-linearly in time; relative to it the treated group carries the log-hazard ratio
-`1.2 - 0.3 * t`, which starts clearly *harmful* and crosses zero at `t = 4`,
-turning protective thereafter. The group hazards -- and hence the survival curves
--- therefore cross, a clear departure from proportional hazards. Because factors
-enter the (numeric) linear predictor directly, the treatment effect is written
-with an explicit indicator `(trt == 1)`.
+*time-varying* effect that is **absent at baseline and grows over follow-up**.
+Both groups share the same hazard at `t = 0`; relative to the control group the
+treated group then carries the log-hazard ratio `-0.25 * t` (linear through the
+origin), so the two hazards start together and fan apart, the treatment becoming
+increasingly protective over time -- a clear departure from proportional hazards.
+Because factors enter the (numeric) linear predictor directly, the effect is
+written with an explicit indicator `(trt == 1)`.
 
 The inspection `rate` controls how much information the interval censoring
 destroys. A dense grid pins each event down tightly and leaves little to impute;
 a sparse grid brackets events only loosely, which is exactly where proper
 multiple imputation pays off over naive midpoint imputation. We deliberately pick
 a fairly sparse schedule here (`rate = 0.5`, mean inter-inspection gap $2$) so
-that the imputation uncertainty is appreciable, while keeping $n = 500$ so the
+that the imputation uncertainty is appreciable, while keeping $n = 1000$ so the
 time-varying effect is still recovered reasonably well.
 
 ```{r}
 set.seed(3)
-df  <- data.frame(trt = rbinom(500, 1, 0.5) |> as.factor())
-sdf <- sim_pexp(~ -2.5 + 0.2 * t + (1.2 - 0.3 * t) * (trt == 1), df,
+df  <- data.frame(trt = rbinom(1000, 1, 0.5) |> as.factor())
+sdf <- sim_pexp(~ -1.8 + 0.1 * t - 0.25 * t * (trt == 1), df,
                 cut = seq(0, 10, by = 0.1))
 icd <- add_inspections(sdf, rate = 0.5, max_time = 10)
 icd %>% select(id, trt, true_time, L, R) %>% head()
@@ -163,10 +163,11 @@ tb_df <- data.frame(
 )
 ```
 
-All three recover the crossing survival curves reasonably well. The midpoint
-intervals are the tightest -- they ignore the imputation uncertainty and are
-therefore over-confident; the MI intervals are wider (the censoring here induces
-a sizeable fraction of missing information, see `summary(fit)` above), and the
+All three recover the diverging survival curves well -- the groups start together
+and the protective treatment effect opens a growing gap. The midpoint intervals
+are the tightest -- they ignore the imputation uncertainty and are therefore
+over-confident; the MI intervals are wider (the censoring here induces a sizeable
+fraction of missing information, see `summary(fit)` above), and the
 non-parametric Turnbull intervals are wider and more jagged still.
 
 ```{r, fig.width = 9, fig.height = 3.6}
@@ -210,14 +211,32 @@ haz_all <- bind_rows(
   mutate(trt = paste0("trt = ", trt),
     method = factor(method, levels = c("PAMM (midpoint)", "PAMM (MI)")))
 
+# true conditional hazards from the data-generating log-hazard
+tgrid <- seq(0, 10, by = 0.1)
+haz_true <- bind_rows(
+  data.frame(tend = tgrid, trt = "trt = 0", hazard = exp(-1.8 + 0.10 * tgrid)),
+  data.frame(tend = tgrid, trt = "trt = 1", hazard = exp(-1.8 - 0.15 * tgrid)))
+
 ggplot(haz_all, aes(x = tend, y = hazard, color = method, fill = method)) +
   geom_stepribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, color = NA) +
   geom_step() +
+  geom_line(data = haz_true, aes(x = tend, y = hazard), inherit.aes = FALSE,
+    color = "red", alpha = 0.5, linewidth = 0.9) +
   facet_wrap(~ trt) +
   scale_color_viridis_d(end = 0.7, aesthetics = c("colour", "fill"), option = "E") +
   labs(x = "time", y = "hazard rate", color = NULL, fill = NULL,
-    title = "Conditional hazard rate: midpoint vs. multiple imputation")
+    title = "Conditional hazard rate: midpoint vs. multiple imputation (true rates in red)")
 ```
+
+The true rates (red) are tracked well through the middle of follow-up, but both
+fits are biased where the inspection grid is sparsest. Near `t = 0` the hazard is
+under-estimated in *both* groups -- few subjects are inspected that early, so the
+boundary is barely identified -- and the steadily rising `trt = 0` tail is also
+under-shot, since its late failures tend to be right-censored at the last (sparse)
+inspection. Midpoint and MI point estimates nearly coincide (consistent with
+midpoint giving reasonable point estimates but over-confident intervals); these
+local hazard errors largely cancel once integrated, so the survival curves above
+are recovered more accurately than the hazard.
 
 Averaged over the grid, the MI hazard intervals are appreciably wider:
 
