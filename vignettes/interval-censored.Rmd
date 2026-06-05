@@ -183,20 +183,22 @@ surv_all$method <- factor(surv_all$method,
   levels = c("PAMM (midpoint)", "PAMM (MI)", "Turnbull"))
 
 ggplot(surv_all, aes(x = tend, y = surv, color = trt, fill = trt)) +
-  geom_stepribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
-  geom_step() +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
+  geom_line() +
   facet_grid(~ method) +
   scale_color_viridis_d(end = 0.8, aesthetics = c("colour", "fill")) +
   labs(x = "time", y = "S(t)", color = "trt", fill = "trt",
     title = "Interval-censored S(t): midpoint vs. multiple imputation vs. Turnbull")
 ```
 
-The over-confidence of the midpoint fit is easy to quantify -- the average width
-of the pointwise survival intervals:
+The over-confidence of the midpoint fit is easy to quantify -- the width 
+of the pointwise survival intervals is always wider for MI than fior midpoint 
+imputation:
 
 ```{r}
-c(midpoint = mean(surv_mid$surv_upper - surv_mid$surv_lower),
-  MI       = mean(surv_mi$surv_upper  - surv_mi$surv_lower)) %>% round(3)
+# midpoint-CI-width / MI-CI-width
+summary((surv_mi$surv_upper  - surv_mi$surv_lower) / 
+        (surv_mid$surv_upper - surv_mid$surv_lower))
 ```
 
 The effect is more visible on the **hazard** scale, which depends directly on
@@ -218,17 +220,17 @@ haz_true <- bind_rows(
   data.frame(tend = tgrid, trt = "trt = 1", hazard = exp(-2.2 + 0.15 * tgrid)))
 
 ggplot(haz_all, aes(x = tend, y = hazard, color = method, fill = method)) +
-  geom_stepribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, color = NA) +
+  geom_stepribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.3, color = NA) +
   geom_step() +
   geom_line(data = haz_true, aes(x = tend, y = hazard), inherit.aes = FALSE,
-    color = "red", alpha = 0.5, linewidth = 0.9) +
+    color = "gold", alpha = 0.5, linewidth = 0.9, linetype = 2) +
   facet_wrap(~ trt) +
-  scale_color_viridis_d(end = 0.7, aesthetics = c("colour", "fill"), option = "E") +
+  scale_color_viridis_d(end = 0.5, aesthetics = c("colour", "fill"), option = "C") +
   labs(x = "time", y = "hazard rate", color = NULL, fill = NULL,
-    title = "Conditional hazard rate: midpoint vs. multiple imputation (true rates in red)")
+    title = "Conditional hazard rate: midpoint vs. multiple imputation\n (true rates in gold)")
 ```
 
-The true rates (red) are tracked closely across the whole range -- the constant
+The true rates (gold) are tracked closely across the whole range -- the constant
 `trt = 0` hazard and the rising `trt = 1` hazard are both recovered well. The
 midpoint and MI point estimates nearly coincide, consistent with midpoint giving
 reasonable point estimates but over-confident intervals; the MI bands are visibly
@@ -244,9 +246,9 @@ c(midpoint = mean(hazard_mid$ci_upper - hazard_mid$ci_lower),
 So the imputation uncertainty inflates the hazard intervals more than the
 survival intervals: $S(t)$ aggregates the hazard over time and the group-level
 survival stays fairly well identified, whereas the hazard itself is tied directly
-to event timing -- exactly what the interval censoring leaves uncertain (cf.\ the
-large fraction of missing information reported by `summary()` above). The same
-machinery is available for `add_cumu_hazard()`.
+to exact event times, which interval censoring leaves uncertain (cf.\ the
+large fraction of missing information reported by `summary()` above).  
+The same machinery is available for `add_cumu_hazard()`.
 
 ## Competing risks
 
@@ -261,20 +263,27 @@ cause-specific model and analyse with one, the imputation and analysis models ar
 congenial.
 
 ```{r, eval = FALSE}
+# WIP -cont here
 icd$cause <- with(icd, ifelse(true_time <= 10,
   sample(c(1, 2), nrow(icd), TRUE, c(.6, .4)), 0))
-fit_cr <- pamm_ic_cr(Surv(L, R, type = "interval2") ~ trt*cause, icd,
-  cause = "cause", cut = seq(0, 10, by = 0.5), m = 10)
+fit_cr <- pamm_ic_cr(
+  Surv(L, R, type = "interval2") ~ trt * cause, # linear TVEs for trt
+  cause = "cause", cut = seq(0, 10, by = 0.5),
+  data = icd, m = 10)
+summary(fit_cr)
+
 ped_cr <- as_ped(
   transform(icd, time = pmin(true_time, 10), status = cause),
-  Surv(time, status) ~ trt,
+  Surv(time, status) ~ trt * cause, 
   cut = seq(0, 10, by = 0.5))
 nd_cr  <- make_newdata(ped_cr, 
                        tend = unique(tend), cause = unique(cause), trt = unique(trt)) |>
   group_by(cause)
 add_cif(nd_cr, fit_cr) |> 
   ggplot(aes(x = tend, y = cif, fill = cause, col = cause)) + 
-  geom_area(position = "stack") + facet_grid(~trt)
+  geom_area(position = "stack") + 
+  scale_color_viridis_d() +
+  facet_grid(~trt)
 ```
 
 Neither treatment effect nor baseline hazards are different across causes in this simple example, and this is recovered well in the estimated CIFs.
