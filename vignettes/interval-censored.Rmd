@@ -125,6 +125,32 @@ operate on the imputation fits directly: they combine the per-imputation
 posterior draws so the intervals reflect both within- and between-imputation
 uncertainty.
 
+The **fraction of missing information** (FMI) is a Rubin-style diagnostic for
+how much of an estimate's uncertainty is due to the unobserved exact event times.
+For a scalar quantity $Q$, write $W$ for the average within-imputation variance
+and $B$ for the between-imputation variance of the point estimates. The relative
+increase in variance is $(1 + 1/m)B/W$, and the FMI is the corresponding fraction
+of the total uncertainty attributable to the missing information (with the usual
+small-sample correction for finite `m`). Values near zero mean that interval
+censoring adds little uncertainty for that quantity; values near one mean the
+imputed event times dominate the uncertainty. `summary()` reports this for the
+parametric coefficients, and for smooth terms it reports five-number summaries
+over the training PED grid. Below we compute the same diagnostic directly for the
+hazard rate, point-by-point on the plotting grid.
+
+FMI is also useful for choosing the number of imputations. Small values of `m`
+such as 5 or 10 are fine while developing the model, but reported analyses should
+usually start around `m = 20`. If the reported FMI values are mostly below 0.10,
+that is often enough; if they are around 0.10--0.30, use roughly 30--50
+imputations; if they are around 0.30--0.50, use roughly 50--100; and if they are
+larger than 0.50, use at least 100 and check sensitivity to a larger `m` or a
+different random seed. The classical relative-efficiency approximation,
+$(1 + \lambda/m)^{-1}$ for FMI $\lambda$, explains why moderate `m` can already
+be efficient on average, but plotted smooths and interval endpoints can still
+show Monte Carlo noise. Keep this separate from `nsim`: `m` controls imputation
+uncertainty, whereas `nsim` controls the simulation noise in posterior-draw
+intervals for plotted quantities of interest.
+
 We compare two PAMM estimates per group. The **MI** estimate pools the imputation
 fits, so its intervals carry both the within-fit and the between-imputation
 uncertainty. The **midpoint** estimate is the initialiser fit (`fit$init_fit`):
@@ -146,6 +172,53 @@ surv_mid   <- add_surv_prob(nd, fit$init_fit, ci_type = "sim", nsim = 1000)
 surv_mi    <- add_surv_prob(nd, fit, nsim = 1000)
 hazard_mid <- add_hazard(nd, fit$init_fit, ci_type = "sim", nsim = 1000)
 hazard_mi  <- add_hazard(nd, fit, nsim = 1000)
+```
+
+```{r, echo = FALSE}
+qoi_fmi <- function(qhat, uhat) {
+  m <- ncol(qhat)
+  if (m <= 1) {
+    return(rep(NA_real_, nrow(qhat)))
+  }
+
+  W <- rowMeans(uhat)
+  B <- apply(qhat, 1, stats::var)
+
+  riv <- rep(NA_real_, length(W))
+  ok <- is.finite(W) & W > 0 & is.finite(B)
+  riv[ok] <- (1 + 1 / m) * B[ok] / W[ok]
+  riv[is.finite(W) & W <= 0 & is.finite(B) & B == 0] <- 0
+  riv[is.finite(W) & W <= 0 & is.finite(B) & B > 0] <- Inf
+
+  fmi <- rep(NA_real_, length(riv))
+  fmi[is.finite(riv) & riv == 0] <- 0
+  finite <- is.finite(riv) & riv > 0
+  dfbr <- (m - 1) * (1 + 1 / riv[finite])^2
+  fmi[finite] <- (riv[finite] + 2 / (dfbr + 3)) / (riv[finite] + 1)
+  fmi[is.infinite(riv) & riv > 0] <- 1
+
+  pmin(pmax(fmi, 0), 1)
+}
+
+hazard_fmi <- function(object, newdata) {
+  hazard_pieces <- vapply(object$fits, function(f) {
+    X <- mgcv::predict.gam(f, newdata = newdata, type = "lpmatrix")
+    eta <- as.numeric(X %*% stats::coef(f))
+    hazard <- exp(eta)
+    var_eta <- pmax(rowSums((X %*% f[["Vp"]]) * X), 0)
+    cbind(hazard = hazard, variance = hazard^2 * var_eta)
+  }, matrix(0, nrow(newdata), 2))
+
+  out <- as.data.frame(newdata)
+  out$fmi <- qoi_fmi(
+    hazard_pieces[, "hazard", ],
+    hazard_pieces[, "variance", ]
+  )
+  out
+}
+
+haz_fmi <- hazard_fmi(fit, nd) %>%
+  mutate(trt = paste0("trt = ", trt), panel = "Hazard FMI")
 ```
 
 As a non-parametric cross-check we add the **Turnbull** estimator -- the NPMLE of
@@ -192,12 +265,12 @@ ggplot(surv_all, aes(x = tend, y = surv, color = trt, fill = trt)) +
     title = "Interval-censored S(t): midpoint vs. multiple imputation vs. Turnbull")
 ```
 
-The over-confidence of the midpoint fit is easy to quantify -- the width 
-of the pointwise survival intervals is always wider for MI than fior midpoint 
-imputation:
+The over-confidence of the midpoint fit is easy to quantify. The ratio below is
+`MI interval width / midpoint interval width`, so values above one mean that
+proper MI gives wider intervals:
 
 ```{r}
-# midpoint-CI-width / MI-CI-width
+# MI-CI-width / midpoint-CI-width
 summary((surv_mi$surv_upper  - surv_mi$surv_lower) / 
         (surv_mid$surv_upper - surv_mid$surv_lower))
 ```
@@ -207,41 +280,83 @@ exact event timing which interval censoring leaves more uncertain. Overlaying
 the two methods within each group shows the MI hazard bands enveloping
 the (over-confident) midpoint-based bands, while the point estimates mostly agree:
 
-```{r, fig.width = 8, fig.height = 4}
+```{r, fig.width = 8, fig.height = 7.2}
+haz_panels <- c("Hazard rate", "Hazard FMI", "Observed censoring")
 haz_all <- bind_rows(
   mutate(hazard_mid, method = "PAMM (midpoint)"),
   mutate(hazard_mi,  method = "PAMM (MI)")) %>%
   mutate(trt = paste0("trt = ", trt),
-    method = factor(method, levels = c("PAMM (midpoint)", "PAMM (MI)")))
+    method = factor(method, levels = c("PAMM (midpoint)", "PAMM (MI)")),
+    panel = factor("Hazard rate", levels = haz_panels))
 
 # true conditional hazards from the data-generating log-hazard
 tgrid <- seq(0, 10, by = 0.1)
 haz_true <- bind_rows(
   data.frame(tend = tgrid, trt = "trt = 0", hazard = exp(-2.2)),
-  data.frame(tend = tgrid, trt = "trt = 1", hazard = exp(-2.2 + 0.15 * tgrid)))
+  data.frame(tend = tgrid, trt = "trt = 1", hazard = exp(-2.2 + 0.15 * tgrid))) %>%
+  mutate(panel = factor("Hazard rate", levels = haz_panels))
 
-ggplot(haz_all, aes(x = tend, y = hazard, color = method, fill = method)) +
-  geom_stepribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.3, color = NA) +
-  geom_step() +
+haz_fmi <- haz_fmi %>%
+  mutate(panel = factor(panel, levels = haz_panels))
+
+censor_panel <- icd %>%
+  mutate(
+    trt = paste0("trt = ", trt),
+    panel = factor("Observed censoring", levels = haz_panels),
+    kind = case_when(
+      L == R ~ "Exact",
+      is.infinite(R) ~ "Right-censored",
+      TRUE ~ "Interval"
+    ),
+    xmin = pmax(L, 0),
+    xmax = pmin(ifelse(is.infinite(R), 10, R), 10)
+  ) %>%
+  group_by(trt) %>%
+  arrange(xmin, xmax, .by_group = TRUE) %>%
+  mutate(subject = row_number()) %>%
+  ungroup()
+
+ggplot() +
+  geom_stepribbon(data = haz_all,
+    aes(x = tend, ymin = ci_lower, ymax = ci_upper, fill = method),
+    alpha = 0.3, color = NA) +
+  geom_step(data = haz_all,
+    aes(x = tend, y = hazard, color = method)) +
   geom_line(data = haz_true, aes(x = tend, y = hazard), inherit.aes = FALSE,
     color = "gold", alpha = 0.5, linewidth = 0.9, linetype = 2) +
-  facet_wrap(~ trt) +
+  geom_segment(data = filter(censor_panel, kind != "Exact"),
+    aes(x = xmin, xend = xmax, y = subject, yend = subject),
+    inherit.aes = FALSE, color = "grey35", alpha = 0.22, linewidth = 0.25) +
+  geom_point(data = filter(censor_panel, kind == "Exact"),
+    aes(x = xmin, y = subject),
+    inherit.aes = FALSE, color = "grey10", alpha = 0.5, size = 0.45) +
+  geom_step(data = haz_fmi, aes(x = tend, y = fmi),
+    inherit.aes = FALSE, color = "black", linewidth = 0.8) +
+  facet_grid(panel ~ trt, scales = "free_y") +
   scale_color_viridis_d(end = 0.5, aesthetics = c("colour", "fill"), option = "C") +
-  labs(x = "time", y = "hazard rate", color = NULL, fill = NULL,
-    title = "Conditional hazard rate: midpoint vs. multiple imputation\n (true rates in gold)")
+  labs(x = "time", y = NULL, color = NULL, fill = NULL,
+    title = "Conditional hazard rate and hazard-scale FMI\n(true rates in gold)")
 ```
 
 The true rates (gold) are tracked closely across the whole range -- the constant
 `trt = 0` hazard and the rising `trt = 1` hazard are both recovered well. The
 midpoint and MI point estimates nearly coincide, consistent with midpoint giving
 reasonable point estimates but over-confident intervals; the MI bands are visibly
-wider throughout.
+wider throughout. The middle row shows *where* interval censoring bites on the
+hazard scale: high FMI means that most uncertainty in the local hazard estimate
+comes from not observing exact event times. The pattern is time-local, rather
+than a single model-wide number, because the event-time ambiguity matters most
+where the interval-censored observations leave the hazard shape weakly pinned
+down. The bottom row shows the observed censoring pattern itself: each horizontal
+line is one subject's observed interval (right-censored observations are drawn up
+to the analysis horizon), and exact observations would appear as points.
 
-Averaged over the grid, the MI hazard intervals are appreciably wider:
+The hazard interval-width ratio uses the same format as the survival calculation:
 
 ```{r}
-c(midpoint = mean(hazard_mid$ci_upper - hazard_mid$ci_lower),
-  MI       = mean(hazard_mi$ci_upper  - hazard_mi$ci_lower)) %>% round(3)
+# MI-CI-width / midpoint-CI-width
+summary((hazard_mi$ci_upper  - hazard_mi$ci_lower) /
+        (hazard_mid$ci_upper - hazard_mid$ci_lower))
 ```
 
 So the imputation uncertainty inflates the hazard intervals more than the
@@ -253,43 +368,21 @@ The same machinery is available for `add_cumu_hazard()`.
 
 ## Competing risks
 
-With $K$ competing causes, `pamm_ic_cr()` imputes both the event time and the
-cause from a fitted **cause-specific** PAMM, and re-fits cause-specific hazards;
-cumulative incidence functions are then obtained from those hazards with
-`add_cif()`. Note that this targets cause-specific hazards (and CIFs derived from
-them), and so differs from @delord2016, who develop MI for interval-censored
-competing risks in the **subdistribution-hazard** (Fine--Gray) framework; the
-scheme here is the cause-specific analogue. Because we impute from a
-cause-specific model and analyse with one, the imputation and analysis models are
-congenial.
+With $K$ competing causes, `pamm_ic_cr()` imputes the event time from a fitted
+**cause-specific** PAMM while retaining observed event causes. This is the usual
+competing-risks interval-censoring setup: the cause is known at detection, but
+the event time is only known to lie in $(L, R]$. If an event cause is explicitly
+missing (`NA`), `pamm_ic_cr()` can also sample the cause from the fitted
+cause-specific hazards at the imputed time. Each completed data set is then
+re-fit as a cause-specific PAMM, and cumulative incidence functions are obtained
+from those hazards with `add_cif()`. Note that this targets cause-specific
+hazards (and CIFs derived from them), and so differs from @delord2016, who
+develop MI for interval-censored competing risks in the **subdistribution-hazard**
+(Fine--Gray) framework; the scheme here is the cause-specific analogue. Because
+we impute from a cause-specific model and analyse with one, the imputation and
+analysis models are congenial.
 
-```{r, eval = FALSE}
-# WIP -cont here
-icd$cause <- with(icd, ifelse(true_time <= 10,
-  sample(c(1, 2), nrow(icd), TRUE, c(.6, .4)), 0))
-fit_cr <- pamm_ic_cr(
-  Surv(L, R, type = "interval2") ~ trt * cause, # linear TVEs for trt
-  cause = "cause", cut = seq(0, 10, by = 0.5),
-  data = icd, m = 10)
-summary(fit_cr)
-
-ped_cr <- as_ped(
-  transform(icd, time = pmin(true_time, 10), status = cause),
-  Surv(time, status) ~ trt * cause, 
-  cut = seq(0, 10, by = 0.5))
-nd_cr  <- make_newdata(ped_cr, 
-                       tend = unique(tend), cause = unique(cause), trt = unique(trt)) |>
-  group_by(cause)
-add_cif(nd_cr, fit_cr) |> 
-  ggplot(aes(x = tend, y = cif, fill = cause, col = cause)) + 
-  geom_area(position = "stack") + 
-  scale_color_viridis_d() +
-  facet_grid(~trt)
-```
-
-Neither treatment effect nor baseline hazards are different across causes in this simple example, and this is recovered well in the estimated CIFs.
-
-### How the time and cause are imputed
+### How event times are imputed when cause is known
 
 For a subject known to fail from cause $k$ in $(L, R]$, the correct conditional
 density of the event time is the cause-$k$ *sub-density*, restricted to the
@@ -314,10 +407,12 @@ all-cause conditional only as an easy-to-invert **proposal** and then **accepts*
 the draw with probability $h_k(t)/h_\bullet(t) \le 1$. The accepted draws are
 proportional to (proposal) $\times$ (acceptance) $= h_\bullet(t)S(t)\cdot
 h_k(t)/h_\bullet(t) \propto h_k(t)S(t) = f_k(t)$ -- exactly the target; the
-$h_\bullet$ cancels. For an **unknown** cause the same machinery is read the
-other way: the time is drawn from the all-cause conditional and the cause is
-then sampled with probability $h_k(t)/h_\bullet(t)$, the same
-`hazard / total_hazard` ratio used to build CIF increments in `add_cif()`.
+$h_\bullet$ cancels. The cause itself is not re-sampled in this known-cause
+case. For an **unknown** event cause (`NA` in the cause column), the same
+machinery is read the other way: the time is drawn from the all-cause
+conditional and the cause is then sampled with probability
+$h_k(t)/h_\bullet(t)$, the same `hazard / total_hazard` ratio used to build CIF
+increments in `add_cif()`.
 
 Two consequences are worth noting:
 
@@ -327,9 +422,134 @@ Two consequences are worth noting:
   when the cause mix shifts over follow-up (e.g. one cause dominates early,
   another late), which is exactly when cause-$k$ times need to be re-weighted.
 * For a **rare** cause $h_k/h_\bullet$ is small everywhere, so acceptance is low;
-  the sampler caps the number of tries and falls back to the last proposal, which
-  can introduce a slight bias. For strongly imbalanced causes a direct inversion
-  of the cause-$k$ sub-cumulative would be more robust -- a possible refinement.
+  the sampler caps the number of tries and errors if it cannot accept a valid
+  proposal. For strongly imbalanced causes a direct inversion of the cause-$k$
+  sub-cumulative would be more robust -- a possible refinement.
+
+### Example
+
+To make the estimand visible, we simulate a small competing-risks data set with
+two genuinely different causes: cause 1 dominates early and decreases over time,
+whereas cause 2 rises later and is more common under treatment. The target
+estimands are the cause-specific CIFs
+$F_k(t \mid x) = P(T \le t, J = k \mid x)$.
+
+There is no direct `survival::survfit()` analogue of Turnbull's estimator for
+interval-censored competing-risk CIFs. Since this is simulated data, however, we
+can use the latent exact event times to compute an **oracle** nonparametric
+Aalen-Johansen estimate and check whether the interval-censored MI fit recovers
+the same CIFs.
+
+```{r, echo = FALSE}
+sim_cr_piecewise <- function(data, cut, max_time = max(cut)) {
+  n <- nrow(data)
+  time <- rep(max_time, n)
+  cause <- rep(0L, n)
+  trt_num <- as.integer(as.character(data$trt))
+
+  for (i in seq_len(n)) {
+    for (j in seq_len(length(cut) - 1L)) {
+      t0 <- cut[j]
+      t1 <- cut[j + 1L]
+      tm <- (t0 + t1) / 2
+      h1 <- exp(-2.45 - 0.10 * tm + 0.05 * trt_num[i])
+      h2 <- exp(-4.40 + 0.24 * tm + 0.75 * trt_num[i])
+      htot <- h1 + h2
+      p_event <- 1 - exp(-htot * (t1 - t0))
+
+      if (runif(1) <= p_event) {
+        time[i] <- t0 - log(1 - runif(1) * p_event) / htot
+        cause[i] <- sample(c(1L, 2L), 1L, prob = c(h1, h2))
+        break
+      }
+    }
+  }
+
+  data.frame(data, time = time, cause = cause, status = as.integer(cause > 0))
+}
+
+aj_cif_df <- function(fit) {
+  sm <- summary(fit)
+  states <- setdiff(colnames(sm$pstate), "(s0)")
+  bind_rows(lapply(states, function(state) {
+    data.frame(
+      tend = sm$time,
+      cif = sm$pstate[, state],
+      cause = state,
+      trt = sub("^trt=", "", as.character(sm$strata)),
+      method = "Aalen-Johansen (true times)"
+    )
+  }))
+}
+```
+
+```{r, fig.width = 8, fig.height = 3.8}
+set.seed(4)
+cr_cut <- seq(0, 10, by = 0.1)
+cr_exact <- data.frame(trt = rbinom(700, 1, 0.5) |> as.factor()) |>
+  sim_cr_piecewise(cut = cr_cut, max_time = 10)
+icd_cr <- add_inspections(cr_exact, rate = 1.3, max_time = 10)
+icd_cr$cause <- factor(icd_cr$cause)
+
+fit_cr <- pamm_ic_cr(
+  Surv(L, R, type = "interval2") ~ trt,
+  cause = "cause",
+  model_formula = ped_status ~ cause * trt + s(tend, by = cause, k = 6),
+  cut = seq(0, 10, by = 0.5),
+  data = icd_cr,
+  m = 20
+)
+summary(fit_cr)
+
+ped_cr <- as_ped(
+  transform(icd_cr, time = pmin(true_time, 10), status = cause),
+  Surv(time, status) ~ trt,
+  cut = seq(0, 10, by = 0.5)
+)
+nd_cr <- make_newdata(
+  ped_cr,
+  tend = unique(tend),
+  cause = levels(icd_cr$cause)[-1],
+  trt = unique(trt)
+) |>
+  group_by(cause, trt)
+cif_cr <- add_cif(nd_cr, fit_cr, nsim = 150)
+
+aj_cr <- survfit(
+  Surv(time, factor(cause, levels = c(0, 1, 2))) ~ trt,
+  data = cr_exact
+) |>
+  aj_cif_df()
+cif_lines <- bind_rows(
+  transmute(cif_cr, tend, trt, cause, cif, method = "PAMM (MI)"),
+  aj_cr
+)
+cif_lines$method <- factor(
+  cif_lines$method,
+  levels = c("PAMM (MI)", "Aalen-Johansen (true times)")
+)
+
+ggplot(cif_lines, aes(x = tend, y = cif, color = cause)) +
+  geom_ribbon(data = cif_cr,
+    aes(ymin = cif_lower, ymax = cif_upper, fill = cause),
+    alpha = 0.18, color = NA) +
+  geom_line(aes(linetype = method), linewidth = 0.8) +
+  scale_color_viridis_d(end = 0.5, aesthetics = c("colour", "fill"), option = "C") +
+  scale_linetype_manual(values = c("solid", "22")) +
+  facet_grid(~ trt) +
+  labs(x = "time", y = "CIF", color = "cause", fill = "cause", linetype = NULL,
+    title = "Interval-censored competing-risk CIFs\nwith oracle Aalen-Johansen benchmark")
+```
+
+The dashed Aalen-Johansen curves use the simulated exact event times and are
+therefore an oracle reference, not an estimator available in a real
+interval-censored data set. They are useful here because they target the same
+CIFs as `add_cif()`. The MI curves track the oracle well: cause 1 contributes
+more early failures, while cause 2 accumulates later and more strongly in the
+treated group. This example is deliberately small so the vignette remains quick
+to render; for an analysis use a larger `m` and more posterior draws in
+`add_cif()`.
+
 
 ## Notes and limitations
 
