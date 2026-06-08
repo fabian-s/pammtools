@@ -12,8 +12,11 @@
 #' An imputed event time is an exact event time, so once imputation has produced
 #' it, the entire downstream pipeline (\code{\link{split_data}} -> \code{\link{pamm}}
 #' -> \code{add_*}) is reused unchanged. The interval cut-points are resolved once
-#' and shared across all imputations, which keeps the spline bases - and hence the
-#' design matrices - identical across fits, a precondition for valid pooling.
+#' and shared across all imputations, but \code{mgcv}'s smooth bases and
+#' centering constraints can still differ across completed data sets. Pooled
+#' predictions therefore evaluate each fitted imputation model with its own
+#' design matrix; \code{object$pooled} is a summary container, not a
+#' \code{gam}-like model for direct \code{predict()} or \code{plot()} calls.
 #'
 #' @param formula A two-sided formula whose left-hand side is an interval-censored
 #'   response \code{Surv(L, R, type = "interval2")} and whose right-hand side lists
@@ -43,18 +46,16 @@
 #'       does not scale with the number of imputations; they still support
 #'       \code{coef}, \code{vcov} and \code{predict(type = "lpmatrix")}, which is
 #'       all the pooled \code{add_*} methods need.}
-#'     \item{\code{pooled}}{the pooled fit, itself a \code{gam}-like object (so
-#'       \code{predict}, \code{plot}, etc.\ work on it directly) with the
-#'       Rubin-combined \code{coefficients} and \code{Vp}/\code{Ve} (within- plus
-#'       between-imputation variance) substituted in, plus the pooled
-#'       parametric/smooth tables with median-p values (\code{$p.table},
-#'       \code{$s.table}) and per-coefficient MI diagnostics (\code{$riv},
-#'       \code{$fmi}) attached as extra elements.}
+#'     \item{\code{pooled}}{a pooled summary container with Rubin-pooled
+#'       parametric coefficients and covariance, pooled parametric/smooth tables
+#'       with median-p values (\code{$p.table}, \code{$s.table}), parametric
+#'       coefficient FMI diagnostics (\code{$fmi.table}) and smooth-term FMI
+#'       five-number summaries over the training grid (\code{$smooth.fmi}).}
 #'     \item{\code{init_fit}}{the (slimmed) initialiser/imputation model.}
 #'     \item{others}{the parsed bounds \code{ic}, the shared \code{cut}, and
 #'       metadata.}
 #'   }
-#'   \code{print}/\code{summary} report the pooled fit; \code{add_*} compute
+#'   \code{print}/\code{summary} report the pooled summary; \code{add_*} compute
 #'   pooled quantities of interest from \code{fits}.
 #' @seealso \code{\link{impute_ic_times}}, \code{\link{add_surv_prob}},
 #'   \code{\link{strip_pamm_fit}}

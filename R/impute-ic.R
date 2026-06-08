@@ -230,6 +230,7 @@ impute_ic_cr <- function(
     p <- vapply(hk, function(m) m[j, s], numeric(1))
     p / sum(p)
   }
+  max_rejection_tries <- 1000L
 
   time <- rep(NA_real_, n_sub)
   cause <- rep(NA_character_, n_sub)
@@ -248,16 +249,40 @@ impute_ic_cr <- function(
   for (s in to_imp) {
     known <- if (!is.null(cause_known)) cause_known[s] else NA
     if (!is.na(known)) {
+      known <- as.character(known)
       # rejection: propose from all-cause conditional, accept w.p. h_k/h_tot
-      for (try in seq_len(50L)) {
+      accepted <- FALSE
+      for (try in seq_len(max_rejection_tries)) {
         t <- draw_time(s)
-        p <- cause_probs(t, s)[as.character(known)]
+        p <- cause_probs(t, s)[known]
+        if (!is.finite(p)) {
+          stop(
+            "Could not evaluate the cause-specific acceptance probability ",
+            "for known cause `",
+            known,
+            "`.",
+            call. = FALSE
+          )
+        }
         if (runif(1) <= p) {
+          accepted <- TRUE
           break
         }
       }
+      if (!accepted) {
+        stop(
+          "Failed to draw an interval-censored event time for known cause `",
+          known,
+          "` after ",
+          max_rejection_tries,
+          " rejection-sampling proposals. The fitted cause-specific hazard ",
+          "is too small relative to the all-cause hazard in the censoring ",
+          "interval.",
+          call. = FALSE
+        )
+      }
       time[s] <- t
-      cause[s] <- as.character(known)
+      cause[s] <- known
     } else {
       t <- draw_time(s)
       time[s] <- t

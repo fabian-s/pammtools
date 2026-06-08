@@ -2,7 +2,7 @@
 % Please edit documentation in R/pamm-ic-pool.R
 \name{pool_pamm_fits}
 \alias{pool_pamm_fits}
-\title{Pool a list of (stripped) imputation fits into a single pooled fit}
+\title{Pool a list of (stripped) imputation fits into a pooled summary object}
 \usage{
 pool_pamm_fits(fits, smry, skeleton = NULL)
 }
@@ -12,19 +12,17 @@ pool_pamm_fits(fits, smry, skeleton = NULL)
 \item{smry}{List of \code{summary.gam} objects, one per fit (computed before
 stripping).}
 
-\item{skeleton}{Optional full (unstripped) fit to use as the pooled-fit
-skeleton; it carries the model frame and other slots that \code{plot.gam()}
-and friends need. Defaults to the first (stripped) fit.}
+\item{skeleton}{Optional full (unstripped) fit used only to supply a common
+training-grid model frame for smooth-term FMI summaries.}
 }
 \description{
 Combines the \code{m} imputation fits with Rubin's rules: the pooled
-coefficients are the average \eqn{\bar Q}, and the pooled covariances inflate
-the within-imputation covariance by the between-imputation variance,
-\eqn{V = \bar W + (1 + 1/m) B} (applied to both \code{Vp} and \code{Ve}), so
-the reported standard errors include the additional MI variability. Term
-p-values are pooled with the median-p rule (see references in
-\code{\link{strip_pamm_fit}}). Returns a pooled \code{gam}-like object plus the
-pooled coefficient/smooth tables and per-coefficient MI diagnostics
-(relative increase in variance, fraction of missing information).
+parametric coefficients use \eqn{\bar Q} and
+\eqn{V = \bar W + (1 + 1/m) B}. Smooth-term p-values are pooled with the
+median-p rule (see references in \code{\link{strip_pamm_fit}}). Because
+\code{mgcv} smooth coefficients can use different centered bases across
+imputations, this returns a plain pooled summary object rather than a
+\code{gam}: \code{add_*()} methods evaluate every imputation fit with its own
+design matrix for predictions.
 }
 \keyword{internal}

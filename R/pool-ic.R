@@ -7,11 +7,12 @@
 #' empirical quantiles of the combined draws. Because mgcv's identifiability
 #' constraints make the (centered) spline basis depend on each imputed data set,
 #' the design matrix is \emph{not} shared across fits, so each fit must be
-#' evaluated with its own \code{lpmatrix}. The combined draws are a sample from
-#' the multiple-imputation mixture posterior
-#' \eqn{(1/M)\sum_m N(\hat\beta^{(m)}, V_\beta^{(m)})}, whose variance reproduces
-#' the within- plus between-imputation (Rubin) variance. Point estimates are the
-#' average of the per-fit point estimates (the MI estimate).
+#' evaluated with its own \code{lpmatrix}. Before empirical quantiles are taken,
+#' the per-fit prediction draws are shifted on the quantity-of-interest scale so
+#' their between-imputation component has Rubin's finite-\code{m} variance
+#' \eqn{(1 + 1/M)B} rather than the raw mixture variance
+#' \eqn{(M - 1)B/M}. Point estimates are the average of the per-fit point
+#' estimates (the MI estimate).
 #'
 #' These methods are dispatched automatically by \code{\link{add_hazard}},
 #' \code{\link{add_cumu_hazard}}, \code{\link{add_surv_prob}} and
@@ -51,6 +52,24 @@ ic_group_cumsum <- function(mat, intlen, grp) {
   out
 }
 
+# Inflate QOI-level draws so their between-imputation variance matches Rubin's
+# finite-m total variance. The raw equal-weight mixture has (m - 1) / m * B; the
+# scale below turns that into (1 + 1 / m) * B without assuming a common GAM basis.
+rubin_inflate_qoi_draws <- function(draws, estimates) {
+  m <- length(draws)
+  if (m <= 1L) {
+    return(draws)
+  }
+  qhat <- do.call(cbind, estimates)
+  qbar <- rowMeans(qhat)
+  between_scale <- sqrt((m + 1) / (m - 1))
+
+  lapply(seq_len(m), function(i) {
+    shift <- (between_scale - 1) * (qhat[, i] - qbar)
+    sweep(draws[[i]], 1L, shift, `+`)
+  })
+}
+
 # Pooled posterior draws of hazard / cumulative hazard / survival, evaluated with
 # each fit's own design matrix, returning lower/upper quantiles.
 #' @importFrom mvtnorm rmvnorm
@@ -78,21 +97,43 @@ ic_ci_draws <- function(
     grp <- group_indices(nd)
   }
 
-  cols <- lapply(fits, function(f) {
+  pieces <- lapply(fits, function(f) {
     X <- predict.gam(f, newdata = nd, type = "lpmatrix")
     B <- rmvnorm(per, mean = coef(f), sigma = f[["Vp"]])
     H <- exp(X %*% t(B)) # nrow x per hazard draws
+    h0 <- as.numeric(exp(X %*% coef(f)))
     if (kind == "hazard") {
-      return(H)
+      return(list(draws = H, estimate = h0))
     }
     C <- ic_group_cumsum(H, intlen, grp)
-    if (kind == "cumu") C else exp(-C)
+    c0 <- ic_group_cumsum(matrix(h0, ncol = 1L), intlen, grp)[, 1L]
+    if (kind == "cumu") {
+      list(draws = C, estimate = c0)
+    } else {
+      list(draws = exp(-C), estimate = exp(-c0))
+    }
   })
-  M <- do.call(cbind, cols)
+  M <- do.call(
+    cbind,
+    rubin_inflate_qoi_draws(
+      lapply(pieces, `[[`, "draws"),
+      lapply(pieces, `[[`, "estimate")
+    )
+  )
+
+  lower <- apply(M, 1, quantile, probs = alpha / 2, na.rm = TRUE)
+  upper <- apply(M, 1, quantile, probs = 1 - alpha / 2, na.rm = TRUE)
+  if (kind %in% c("hazard", "cumu")) {
+    lower <- pmax(lower, 0)
+    upper <- pmax(upper, 0)
+  } else if (kind == "surv") {
+    lower <- pmin(pmax(lower, 0), 1)
+    upper <- pmin(pmax(upper, 0), 1)
+  }
 
   list(
-    lower = apply(M, 1, quantile, probs = alpha / 2, na.rm = TRUE),
-    upper = apply(M, 1, quantile, probs = 1 - alpha / 2, na.rm = TRUE),
+    lower = lower,
+    upper = upper,
     data = nd
   )
 }
@@ -282,18 +323,34 @@ ic_cif_draws_group <- function(
   cause_var,
   interval_length
 ) {
-  cols <- lapply(object[["fits"]], function(f) {
+  pieces <- lapply(object[["fits"]], function(f) {
     B <- rmvnorm(per, mean = coef(f), sigma = f[["Vp"]])
-    ic_cif_fit_group(
-      group_df,
-      f,
-      B,
-      object[["cause_levels"]],
-      cause_var,
-      interval_length
+    list(
+      draws = ic_cif_fit_group(
+        group_df,
+        f,
+        B,
+        object[["cause_levels"]],
+        cause_var,
+        interval_length
+      ),
+      estimate = as.numeric(ic_cif_fit_group(
+        group_df,
+        f,
+        matrix(coef(f), nrow = 1L),
+        object[["cause_levels"]],
+        cause_var,
+        interval_length
+      ))
     )
   })
-  do.call(cbind, cols)
+  do.call(
+    cbind,
+    rubin_inflate_qoi_draws(
+      lapply(pieces, `[[`, "draws"),
+      lapply(pieces, `[[`, "estimate")
+    )
+  )
 }
 
 #' @rdname add_cif

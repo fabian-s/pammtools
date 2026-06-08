@@ -11,11 +11,12 @@ quantity of interest using that fit's \emph{own} design matrix, then taking
 empirical quantiles of the combined draws. Because mgcv's identifiability
 constraints make the (centered) spline basis depend on each imputed data set,
 the design matrix is \emph{not} shared across fits, so each fit must be
-evaluated with its own \code{lpmatrix}. The combined draws are a sample from
-the multiple-imputation mixture posterior
-\eqn{(1/M)\sum_m N(\hat\beta^{(m)}, V_\beta^{(m)})}, whose variance reproduces
-the within- plus between-imputation (Rubin) variance. Point estimates are the
-average of the per-fit point estimates (the MI estimate).
+evaluated with its own \code{lpmatrix}. Before empirical quantiles are taken,
+the per-fit prediction draws are shifted on the quantity-of-interest scale so
+their between-imputation component has Rubin's finite-\code{m} variance
+\eqn{(1 + 1/M)B} rather than the raw mixture variance
+\eqn{(M - 1)B/M}. Point estimates are the average of the per-fit point
+estimates (the MI estimate).
 }
 \details{
 These methods are dispatched automatically by \code{\link{add_hazard}},

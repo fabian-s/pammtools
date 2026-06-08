@@ -140,7 +140,7 @@ test_that("pamm_ic resolves dot formulas before fitting", {
   expect_true("x" %in% all.vars(fit$model_formula))
 })
 
-test_that("pamm_ic stores slimmed fits and a pooled fit", {
+test_that("pamm_ic stores slimmed fits and a pooled summary", {
   icd <- make_ic_data(250, seed = 4)
   fit <- pamm_ic(
     Surv(L, R, type = "interval2") ~ x,
@@ -160,17 +160,42 @@ test_that("pamm_ic stores slimmed fits and a pooled fit", {
   )
   expect_silent(predict(fit$fits[[1]], nd, type = "lpmatrix"))
 
-  # pooled object: Rubin-combined coef/Vp + tables + diagnostics
+  # pooled object: summary container, not a fabricated gam fit
   expect_true(!is.null(fit$pooled))
-  expect_setequal(names(coef(fit$fits[[1]])), names(fit$pooled$coefficients))
+  expect_s3_class(fit$pooled, "pamm_ic_pool")
+  expect_false(inherits(fit$pooled, "gam"))
+  expect_setequal(
+    names(coef(fit$fits[[1]]))[seq_len(fit$fits[[1]]$nsdf)],
+    rownames(fit$pooled$p.table)
+  )
   expect_true(!is.null(fit$pooled$p.table))
-  expect_true(all(c("riv", "fmi") %in% names(fit$pooled)))
+  expect_true(all(c("riv", "fmi", "fmi.table") %in% names(fit$pooled)))
+  expect_setequal(rownames(fit$pooled$fmi.table), rownames(fit$pooled$p.table))
+  expect_setequal(rownames(fit$pooled$smooth.fmi), rownames(fit$pooled$s.table))
+  expect_true(all(is.finite(fit$pooled$smooth.fmi)))
   # pooled (within + between) variance is >= mean within-imputation variance
   within <- mean(vapply(fit$fits, function(f) vcov(f)["x", "x"], 0))
   expect_gte(fit$pooled$Vp["x", "x"], within - 1e-10)
 })
 
-test_that("print/summary report the pooled fit", {
+test_that("QOI draws receive Rubin finite-imputation inflation", {
+  estimates <- list(1, 2, 4)
+  draws <- lapply(estimates, function(x) matrix(x, nrow = 1L))
+
+  inflated <- rubin_inflate_qoi_draws(draws, estimates)
+  inflated_values <- as.numeric(do.call(cbind, inflated))
+  b <- stats::var(unlist(estimates))
+  rubin_between <- (1 + 1 / length(estimates)) * b
+
+  expect_equal(
+    mean((inflated_values - mean(inflated_values))^2),
+    rubin_between,
+    tolerance = 1e-12
+  )
+  expect_equal(rubin_inflate_qoi_draws(draws[1], estimates[1]), draws[1])
+})
+
+test_that("print/summary report the pooled summary", {
   icd <- make_ic_data(200, seed = 6)
   fit <- pamm_ic(
     Surv(L, R, type = "interval2") ~ x,
@@ -181,12 +206,15 @@ test_that("print/summary report the pooled fit", {
   expect_output(print(fit), "interval-censored")
   expect_output(print(fit), "via multiple imputation")
   # print() is a compact header only; the coefficient tables live in summary()
-  expect_output(print(fit), "Use summary\\(\\)")
+  expect_output(print(fit), "Use summary\\(\\) for pooled inference")
   expect_failure(expect_output(print(fit), "Pooled parametric coefficients"))
   s <- summary(fit)
   expect_s3_class(s, "summary.pamm_ic")
   expect_true(!is.null(s$p.table) && !is.null(s$s.table))
+  expect_true(!is.null(s$fmi.table) && !is.null(s$smooth.fmi))
   expect_output(print(s), "Rubin")
+  expect_output(print(s), "Fraction of missing information")
+  expect_output(print(s), "Smooth terms")
 })
 
 test_that("exact-only data reproduces a plain right-censored PAMM", {
@@ -370,6 +398,41 @@ test_that("competing-risks imputation samples exact unknown causes", {
   )
   expect_false(anyNA(imp$cause[exact_unknown]))
   expect_true(all(imp$cause[exact_unknown] %in% cause_levels))
+})
+
+test_that("known-cause CR imputation does not keep rejected proposals", {
+  cut <- c(0, 1)
+  ic <- data.frame(
+    id = 1L,
+    ic_L = 0,
+    ic_R = 1,
+    ic_kind = factor(
+      "interval",
+      levels = c("exact", "right", "left", "interval")
+    )
+  )
+  cache <- list(
+    ii = int_info(cut),
+    n_int = 1L,
+    n_sub = 1L,
+    X_list = list(
+      a = matrix(-Inf, nrow = 1L, ncol = 1L),
+      b = matrix(0, nrow = 1L, ncol = 1L)
+    ),
+    cause_levels = c("a", "b")
+  )
+
+  expect_error(
+    impute_ic_cr(
+      list(),
+      ic,
+      cut,
+      beta = 1,
+      cache = cache,
+      cause_known = "a"
+    ),
+    "Failed to draw an interval-censored event time for known cause"
+  )
 })
 
 test_that("add_inspections brackets the true event time", {

@@ -37,9 +37,9 @@ strip_pamm_fit <- function(fit) {
 
 # Fit one imputation, capture its summary (for median-p pooling) while the full
 # object is available, then return a stripped fit + PED row count. The full
-# (unstripped) fit is also returned so the caller can keep *one* of them as the
-# pooled-fit skeleton (it carries the model frame etc. that plot.gam() needs);
-# only the slimmed fits are stored per imputation.
+# (unstripped) fit is also returned so the caller can use one model frame as a
+# common training-grid reference for term-level MI diagnostics; only the slimmed
+# fits are stored per imputation.
 fit_strip_summarise <- function(model_formula, data, engine, ...) {
   f <- pamm(model_formula, data = data, engine = engine, ...)
   list(summary = summary(f), fit = strip_pamm_fit(f), full = f, n = nrow(data))
@@ -85,24 +85,170 @@ pool_smooth_table <- function(stabs) {
   out
 }
 
-#' Pool a list of (stripped) imputation fits into a single pooled fit
+mi_riv <- function(within, between, m) {
+  out <- within
+  out[] <- NA_real_
+  if (m <= 1L) {
+    return(out)
+  }
+
+  between <- pmax(between, 0)
+  ok <- is.finite(within) & within > 0 & is.finite(between)
+  out[ok] <- (1 + 1 / m) * between[ok] / within[ok]
+
+  no_var <- is.finite(within) & within <= 0 & between == 0
+  out[no_var] <- 0
+  only_between <- is.finite(within) & within <= 0 & between > 0
+  out[only_between] <- Inf
+  out
+}
+
+mi_fmi <- function(riv, m) {
+  out <- riv
+  out[] <- NA_real_
+  if (m <= 1L) {
+    return(out)
+  }
+
+  zero <- is.finite(riv) & riv == 0
+  out[zero] <- 0
+
+  finite <- is.finite(riv) & riv > 0
+  dfbr <- (m - 1) * (1 + 1 / riv[finite])^2
+  out[finite] <- (riv[finite] + 2 / (dfbr + 3)) / (riv[finite] + 1)
+
+  out[is.infinite(riv) & riv > 0] <- 1
+  out
+}
+
+pool_param_fmi_table <- function(fmi, nsdf) {
+  if (nsdf < 1L || !length(fmi)) return(NULL)
+  ind <- seq_len(nsdf)
+  if (!any(is.finite(fmi[ind]))) return(NULL)
+  out <- matrix(fmi[ind], ncol = 1L)
+  colnames(out) <- "FMI"
+  rownames(out) <- names(fmi)[ind]
+  out
+}
+
+fmi_fivenum <- function(x) {
+  x <- x[is.finite(x)]
+  if (!length(x)) {
+    return(rep(NA_real_, 5L))
+  }
+  stats::quantile(
+    x,
+    probs = c(0, 0.25, 0.5, 0.75, 1),
+    names = FALSE,
+    na.rm = TRUE
+  )
+}
+
+smooth_term_qoi <- function(fit, refdata, smooth_names) {
+  labels <- vapply(fit[["smooth"]], `[[`, character(1L), "label")
+  smooth_ix <- match(smooth_names, labels)
+  if (anyNA(smooth_ix)) {
+    stop("Smooth terms differ across imputation fits.", call. = FALSE)
+  }
+
+  X <- predict.gam(fit, refdata, type = "lpmatrix")
+  q <- u <- matrix(
+    NA_real_,
+    nrow = nrow(X),
+    ncol = length(smooth_names),
+    dimnames = list(NULL, smooth_names)
+  )
+  beta <- coef(fit)
+
+  for (kk in seq_along(smooth_names)) {
+    sm <- fit[["smooth"]][[smooth_ix[kk]]]
+    ind <- sm[["first.para"]]:sm[["last.para"]]
+    Xs <- X[, ind, drop = FALSE]
+    Xs <- sweep(Xs, 2L, colMeans(Xs), `-`)
+    V <- fit[["Vp"]][ind, ind, drop = FALSE]
+
+    q[, kk] <- as.numeric(Xs %*% beta[ind])
+    u[, kk] <- pmax(rowSums((Xs %*% V) * Xs), 0)
+  }
+
+  list(q = q, u = u)
+}
+
+pool_smooth_fmi_table <- function(fits, skeleton, smooth_names) {
+  if (
+    length(fits) <= 1L ||
+      is.null(skeleton) ||
+      is.null(skeleton[["model"]]) ||
+      !length(smooth_names)
+  ) {
+    return(NULL)
+  }
+
+  refdata <- skeleton[["model"]]
+  mean_q <- m2_q <- W <- NULL
+  used_terms <- NULL
+
+  for (jj in seq_along(fits)) {
+    qoi <- smooth_term_qoi(fits[[jj]], refdata, smooth_names)
+    q <- qoi[["q"]]
+    u <- qoi[["u"]]
+
+    if (is.null(used_terms)) {
+      used_terms <- colnames(q)
+      mean_q <- m2_q <- W <- matrix(
+        0,
+        nrow = nrow(q),
+        ncol = length(used_terms),
+        dimnames = list(NULL, used_terms)
+      )
+    }
+    if (!all(used_terms %in% colnames(q))) {
+      stop("Smooth terms differ across imputation fits.", call. = FALSE)
+    }
+
+    q <- q[, used_terms, drop = FALSE]
+    u <- u[, used_terms, drop = FALSE]
+
+    W <- W + u
+    delta <- q - mean_q
+    mean_q <- mean_q + delta / jj
+    m2_q <- m2_q + delta * (q - mean_q)
+  }
+
+  W <- W / length(fits)
+  B <- m2_q / (length(fits) - 1)
+  fmi <- mi_fmi(mi_riv(W, B, length(fits)), length(fits))
+  out <- t(vapply(
+    seq_len(ncol(fmi)),
+    function(jj) {
+      fmi_fivenum(fmi[, jj])
+    },
+    numeric(5L)
+  ))
+  colnames(out) <- c("Min", "Q1", "Median", "Q3", "Max")
+  rownames(out) <- used_terms
+  if (!any(is.finite(out))) {
+    return(NULL)
+  }
+  out
+}
+
+#' Pool a list of (stripped) imputation fits into a pooled summary object
 #'
 #' Combines the \code{m} imputation fits with Rubin's rules: the pooled
-#' coefficients are the average \eqn{\bar Q}, and the pooled covariances inflate
-#' the within-imputation covariance by the between-imputation variance,
-#' \eqn{V = \bar W + (1 + 1/m) B} (applied to both \code{Vp} and \code{Ve}), so
-#' the reported standard errors include the additional MI variability. Term
-#' p-values are pooled with the median-p rule (see references in
-#' \code{\link{strip_pamm_fit}}). Returns a pooled \code{gam}-like object plus the
-#' pooled coefficient/smooth tables and per-coefficient MI diagnostics
-#' (relative increase in variance, fraction of missing information).
+#' parametric coefficients use \eqn{\bar Q} and
+#' \eqn{V = \bar W + (1 + 1/m) B}. Smooth-term p-values are pooled with the
+#' median-p rule (see references in \code{\link{strip_pamm_fit}}). Because
+#' \code{mgcv} smooth coefficients can use different centered bases across
+#' imputations, this returns a plain pooled summary object rather than a
+#' \code{gam}: \code{add_*()} methods evaluate every imputation fit with its own
+#' design matrix for predictions.
 #'
 #' @param fits List of stripped imputation fits.
 #' @param smry List of \code{summary.gam} objects, one per fit (computed before
 #'   stripping).
-#' @param skeleton Optional full (unstripped) fit to use as the pooled-fit
-#'   skeleton; it carries the model frame and other slots that \code{plot.gam()}
-#'   and friends need. Defaults to the first (stripped) fit.
+#' @param skeleton Optional full (unstripped) fit used only to supply a common
+#'   training-grid model frame for smooth-term FMI summaries.
 #' @keywords internal
 #' @importFrom stats coef cov median
 pool_pamm_fits <- function(fits, smry, skeleton = NULL) {
@@ -110,6 +256,7 @@ pool_pamm_fits <- function(fits, smry, skeleton = NULL) {
   p <- length(coef(fits[[1]]))
   cf <- vapply(fits, coef, numeric(p)) # p x m
   Qbar <- rowMeans(cf)
+  nsdf <- fits[[1]][["nsdf"]]
 
   Wp <- Reduce(`+`, lapply(fits, function(f) f[["Vp"]])) / m
   We <- Reduce(
@@ -121,37 +268,39 @@ pool_pamm_fits <- function(fits, smry, skeleton = NULL) {
   Vp <- Wp + (1 + 1 / m) * B
   Ve <- We + (1 + 1 / m) * B
 
-  edf_mat <- vapply(fits, function(f) as.numeric(f[["edf"]]), numeric(p))
-  edf <- rowMeans(edf_mat)
-
-  # The pooled fit *is* a gam-like object (structure from fit 1, with the
-  # Rubin-combined coefficients/covariances substituted in) so that it inherits
-  # from "gam" and the usual methods (predict, plot, ...) work on it directly.
-  # The MI-specific tables and diagnostics are attached as extra list elements.
-  g <- if (!is.null(skeleton)) skeleton else fits[[1]]
-  g[["coefficients"]] <- Qbar
-  g[["Vp"]] <- Vp
-  g[["Ve"]] <- Ve
-  g[["edf"]] <- edf
-
-  # per-coefficient MI diagnostics
-  wdiag <- diag(Wp)
-  bdiag <- diag(B)
-  riv <- ifelse(wdiag > 0, (1 + 1 / m) * bdiag / wdiag, NA_real_)
-  dfbr <- (m - 1) * (1 + 1 / riv)^2
-  fmi <- (riv + 2 / (dfbr + 3)) / (riv + 1)
+  riv <- mi_riv(diag(Wp), diag(B), m)
+  fmi <- mi_fmi(riv, m)
   names(riv) <- names(fmi) <- names(Qbar)
 
-  g[["p.table"]] <- pool_param_table(
+  p.table <- pool_param_table(
     lapply(smry, `[[`, "p.table"),
     Qbar,
     Vp,
-    g[["nsdf"]]
+    nsdf
   )
-  g[["s.table"]] <- pool_smooth_table(lapply(smry, `[[`, "s.table"))
-  g[["riv"]] <- riv
-  g[["fmi"]] <- fmi
-  g
+  s.table <- pool_smooth_table(lapply(smry, `[[`, "s.table"))
+  fmi.table <- pool_param_fmi_table(fmi, nsdf)
+  smooth.fmi <- pool_smooth_fmi_table(
+    fits,
+    skeleton,
+    rownames(s.table)
+  )
+
+  structure(
+    list(
+      family = fits[[1]][["family"]],
+      nsdf = nsdf,
+      p.table = p.table,
+      s.table = s.table,
+      riv = riv[seq_len(nsdf)],
+      fmi = fmi[seq_len(nsdf)],
+      fmi.table = fmi.table,
+      smooth.fmi = smooth.fmi,
+      Vp = Vp[seq_len(nsdf), seq_len(nsdf), drop = FALSE],
+      Ve = Ve[seq_len(nsdf), seq_len(nsdf), drop = FALSE]
+    ),
+    class = "pamm_ic_pool"
+  )
 }
 
 #' @rdname pamm_ic
@@ -194,7 +343,7 @@ print.pamm_ic <- function(x, ...) {
     sep = ""
   )
   cat(
-    "Use summary() for the full pooled fit and add_*() for pooled",
+    "Use summary() for pooled inference and add_*() for pooled",
     "quantities of interest.\n"
   )
   invisible(x)
@@ -220,7 +369,8 @@ summary.pamm_ic <- function(object, ...) {
       cut = object[["cut"]],
       p.table = p[["p.table"]],
       s.table = p[["s.table"]],
-      fmi = p[["fmi"]]
+      fmi.table = p[["fmi.table"]],
+      smooth.fmi = p[["smooth.fmi"]]
     ),
     class = "summary.pamm_ic"
   )
@@ -276,13 +426,16 @@ print.summary.pamm_ic <- function(x, ...) {
       digits = 3L
     )
   }
-  fmi <- x[["fmi"]][is.finite(x[["fmi"]])]
-  if (length(fmi)) {
-    cat(
-      "\nFraction of missing information (from interval censoring):",
-      sprintf("median %.2f, max %.2f", stats::median(fmi), max(fmi)),
-      "\n"
-    )
+  if (!is.null(x[["fmi.table"]]) || !is.null(x[["smooth.fmi"]])) {
+    cat("\nFraction of missing information (FMI):\n")
+  }
+  if (!is.null(x[["fmi.table"]])) {
+    cat("Parametric coefficients:\n")
+    print(round(x[["fmi.table"]], 3L))
+  }
+  if (!is.null(x[["smooth.fmi"]])) {
+    cat("\nSmooth terms (five-number summaries over training PED rows):\n")
+    print(round(x[["smooth.fmi"]], 3L))
   }
   cat(
     "\nStandard errors include within- + between-imputation variance",
