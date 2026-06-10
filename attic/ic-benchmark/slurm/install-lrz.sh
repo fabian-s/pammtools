@@ -30,11 +30,13 @@ git fetch origin
 git checkout "$BRANCH"
 git pull origin "$BRANCH"
 
-# CRAN dependencies into the SHARED lib (pak resolves conflicts correctly)
+# CRAN dependencies into the SHARED lib. NOTE: pak's solver fails on this R
+# 4.3.3 setup (current rms needs R >= 4.4 and pak refuses partial solutions),
+# so: pin rms 6.7-1 via pak once, then plain install.packages for the rest,
+# installing only what is missing.
 Rscript -e "if (!requireNamespace('pak', quietly=TRUE)) install.packages('pak', repos='https://cloud.r-project.org', lib='$RLIB_BASE')"
-# current rms (pec dependency) needs R >= 4.4; LRZ has 4.3.3 -> pin 6.7-1 FIRST
 Rscript -e "if (!requireNamespace('rms', quietly=TRUE)) pak::pkg_install('rms@6.7-1', lib='$RLIB_BASE', ask=FALSE)"
-Rscript -e "pak::pkg_install(c('icenReg','mvtnorm','dplyr','tidyr','purrr','tibble','mgcv','survival','Formula','pec','scam','checkmate','magrittr','rlang','ggplot2','lazyeval','vctrs'), lib='$RLIB_BASE', ask=FALSE)"
+Rscript -e "pkgs <- c('icenReg','mvtnorm','dplyr','tidyr','purrr','tibble','mgcv','survival','Formula','pec','scam','checkmate','magrittr','rlang','ggplot2','lazyeval','vctrs'); miss <- pkgs[!vapply(pkgs, requireNamespace, TRUE, quietly=TRUE)]; if (length(miss)) install.packages(miss, repos='https://cloud.r-project.org', lib='$RLIB_BASE') else cat('all deps present\n')"
 
 # the branch itself, into the ISOLATED lib
 export R_LIBS_USER="$RLIB:$RLIB_BASE"

@@ -16,7 +16,12 @@ if (length(args) < 1) stop("usage: run-task.R <task_id> [n_cores]")
 task_id <- as.integer(args[1])
 n_cores <- if (length(args) >= 2) as.integer(args[2]) else 1L
 
+# isolated benchmark library (LRZ): must beat the .Rprofile-prepended shared
+# lib, so prepend AFTER startup, right before loading
+ic_lib <- Sys.getenv("IC_BENCH_LIB")
+if (nzchar(ic_lib)) .libPaths(c(ic_lib, .libPaths()))
 suppressMessages(library(pammtools))
+stopifnot(exists("pamm_ic")) # guard against a shadowing pammtools install
 # load namespaces in the PARENT so forked children don't each pay the cost
 loadNamespace("icenReg")
 loadNamespace("mvtnorm")

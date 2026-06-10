@@ -23,6 +23,7 @@ module load slurm_setup
 module load r/4.3.3-gcc13-mkl
 
 export R_LIBS_USER="${HOME}/R/ic-bench-lib:${HOME}/R/x86_64-pc-linux-gnu-library/4.3"
+export IC_BENCH_LIB="${HOME}/R/ic-bench-lib"
 # MKL x mclapply oversubscription guard
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
