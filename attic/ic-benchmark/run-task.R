@@ -23,8 +23,8 @@ if (nzchar(ic_lib)) .libPaths(c(ic_lib, .libPaths()))
 suppressMessages(library(pammtools))
 stopifnot(exists("pamm_ic")) # guard against a shadowing pammtools install
 # load namespaces in the PARENT so forked children don't each pay the cost
-loadNamespace("icenReg")
-loadNamespace("mvtnorm")
+invisible(loadNamespace("icenReg"))
+invisible(loadNamespace("mvtnorm"))
 bench_dir <- if (file.exists("attic/ic-benchmark/config.R")) {
   "attic/ic-benchmark"
 } else {

@@ -195,19 +195,23 @@ lf_file <- file.path(bench_dir, "results", "least-false.rds")
 d5 <- pw |>
   filter(effect == "tv", estimand == "logHR", n == 300,
          method %in% c("mi", "midpoint", "oracle", "ic_par"))
-p5 <- ggplot(d5, aes(t, bias, colour = method)) +
-  geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
-  geom_pointrange(aes(ymin = bias - bias_mcse, ymax = bias + bias_mcse),
-    position = position_dodge(width = 0.3)
-  ) +
-  facet_grid(baseline ~ rate) +
-  scale_colour_manual(values = cols) +
-  labs(
-    x = "t", y = "bias of logHR(t)",
-    title = "TV cells: pointwise bias of logHR(t) estimates (n = 300)",
-    subtitle = "ic_par estimates a constant: its 'bias' is estimand mismatch"
-  )
-print(p5)
+if (nrow(d5) > 0) {
+  p5 <- ggplot(d5, aes(t, bias, colour = method)) +
+    geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
+    geom_pointrange(aes(ymin = bias - bias_mcse, ymax = bias + bias_mcse),
+      position = position_dodge(width = 0.3)
+    ) +
+    facet_grid(baseline ~ rate) +
+    scale_colour_manual(values = cols) +
+    labs(
+      x = "t", y = "bias of logHR(t)",
+      title = "TV cells: pointwise bias of logHR(t) estimates (n = 300)",
+      subtitle = "ic_par estimates a constant: its 'bias' is estimand mismatch"
+    )
+  print(p5)
+} else {
+  cat("(no TV-cell data in this run)")
+}
 ```
 
 ```{r fig5-prose, results = "asis"}
