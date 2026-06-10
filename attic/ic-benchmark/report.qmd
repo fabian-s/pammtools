@@ -1,0 +1,306 @@
+---
+title: "Interval-censored PAMMs: Monte Carlo benchmark"
+date: today
+format:
+  html:
+    toc: true
+    embed-resources: true
+    fig-width: 10
+    fig-height: 4.5
+execute:
+  echo: false
+  warning: false
+---
+
+```{r setup}
+suppressMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(purrr)
+  library(tibble)
+})
+bench_dir <- if (file.exists("config.R")) "." else "attic/ic-benchmark"
+res <- readRDS(file.path(bench_dir, "results", "summary.rds"))
+tl <- res$term_level
+pw <- res$pointwise |>
+  left_join(
+    distinct(tl, cell_id, arm, baseline, effect, rate, n, mean_int),
+    by = "cell_id"
+  )
+paired <- res$paired
+theme_set(theme_bw(base_size = 12))
+cols <- c(
+  oracle = "#1b9e77", mi = "#1f78b4", midpoint = "#e31a1c",
+  ic_par = "#ff7f00", ic_sp = "#6a3d9a", turnbull = "#b15928"
+)
+meth_lvls <- names(cols)
+tl <- tl |> mutate(method = factor(method, levels = meth_lvls))
+pw <- pw |> mutate(method = factor(method, levels = meth_lvls))
+n_rep_prod <- max(tl$n_rep)
+```
+
+All prose numbers in this report are computed from `results/summary.rds`
+(`r res$n_raw_rows` raw result rows, up to `r n_rep_prod` replications per
+cell). Monte Carlo SEs for grid-averaged coverage are clustered at the
+replication level. Cells where a method is misspecified by design are flagged
+with open symbols.
+
+## Failure rates
+
+```{r failures, results = "asis"}
+fl <- res$failures |> filter(n_fail > 0)
+if (nrow(fl) == 0) {
+  cat("No method failures occurred in any cell.\n")
+} else {
+  cat(sprintf(
+    "%d (cell, method) combinations had failures; max failure rate %.1f%% (%s, %s).\n\n",
+    nrow(fl), 100 * max(fl$fail_rate),
+    fl$cell_id[which.max(fl$fail_rate)], fl$method[which.max(fl$fail_rate)]
+  ))
+  knitr::kable(fl, digits = 3)
+}
+if (nrow(res$missing) > 0) {
+  cat(sprintf("\n**WARNING: %d missing (cell, rep) combinations.**\n",
+              nrow(res$missing)))
+}
+```
+
+## Fig 1 (headline): coverage of S(t|x) and interval-average hazard
+
+```{r fig1, fig-height: 7}
+d1 <- tl |>
+  filter(arm == "core", estimand %in% c("surv", "hazard"), !is.na(coverage))
+ggplot(d1, aes(mean_int, coverage, colour = method, shape = misspecified)) +
+  geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+  geom_pointrange(aes(
+    ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
+  ), position = position_dodge(width = 0.12)) +
+  geom_line(alpha = .5) +
+  facet_grid(estimand + n ~ baseline + effect) +
+  scale_colour_manual(values = cols) +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1)) +
+  coord_cartesian(ylim = c(0.4, 1)) +
+  labs(
+    x = "mean inspection-interval length", y = "95% CI coverage (grid-avg)",
+    colour = NULL, shape = "misspecified",
+    title = "Coverage of S(t|x) and interval-average hazard, core factorial",
+    subtitle = "pointranges: +-1 MC SE (rep-clustered)"
+  )
+```
+
+```{r fig1-prose, results = "asis"}
+mi_s <- d1 |> filter(method == "mi", estimand == "surv")
+md_s <- d1 |> filter(method == "midpoint", estimand == "surv")
+cat(sprintf(
+  "MI survival coverage across core cells: %.3f-%.3f (median %.3f). Midpoint: %.3f-%.3f (median %.3f).\n",
+  min(mi_s$coverage), max(mi_s$coverage), median(mi_s$coverage),
+  min(md_s$coverage), max(md_s$coverage), median(md_s$coverage)
+))
+```
+
+## Fig 2: beta / logHR(t) coverage + paired MI−midpoint differences
+
+```{r fig2}
+d2 <- tl |>
+  filter(arm == "core", estimand %in% c("beta", "logHR"), !is.na(coverage))
+ggplot(d2, aes(mean_int, coverage, colour = method, shape = misspecified)) +
+  geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+  geom_pointrange(aes(
+    ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
+  ), position = position_dodge(width = 0.12)) +
+  facet_grid(estimand + n ~ baseline + effect) +
+  scale_colour_manual(values = cols) +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1)) +
+  coord_cartesian(ylim = c(0.4, 1)) +
+  labs(
+    x = "mean inspection-interval length", y = "95% CI coverage",
+    title = "Covariate-effect coverage (beta in PH cells, logHR(t) grid-avg)",
+    subtitle = "open symbols: misspecified by design (constant-beta methods vs beta(t))"
+  )
+```
+
+```{r fig2b, fig-height: 4}
+ggplot(
+  paired |> filter(arm == "core"),
+  aes(factor(rate), diff, colour = estimand)
+) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
+  geom_pointrange(aes(ymin = diff - diff_mcse, ymax = diff + diff_mcse),
+    position = position_dodge(width = 0.4)
+  ) +
+  facet_grid(n ~ baseline + effect) +
+  labs(
+    x = "inspection rate (dense -> sparse)", y = "coverage(MI) - coverage(midpoint)",
+    title = "Paired MI - midpoint coverage differences (same data per rep)",
+    subtitle = "pointranges: +-1 paired MC SE"
+  )
+```
+
+## Fig 3: point accuracy (RMSE, incl. Turnbull)
+
+```{r fig3}
+d3 <- tl |> filter(arm == "core", estimand == "surv")
+base_rmse <- d3 |>
+  filter(method == "oracle") |>
+  select(cell_id, rmse_oracle = rmse)
+d3 <- left_join(d3, base_rmse, by = "cell_id") |>
+  mutate(rrmse = rmse / rmse_oracle)
+ggplot(d3, aes(mean_int, rrmse, colour = method, shape = misspecified)) +
+  geom_hline(yintercept = 1, linetype = 2, colour = "grey40") +
+  geom_point(size = 2) + geom_line(alpha = .5) +
+  facet_grid(n ~ baseline + effect) +
+  scale_colour_manual(values = cols) +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1)) +
+  scale_y_log10(breaks = c(0.5, 1, 2, 5, 10)) +
+  labs(
+    x = "mean inspection-interval length", y = "RMSE relative to oracle (log)",
+    title = "S(t|x) point-estimate accuracy relative to the oracle"
+  )
+```
+
+```{r fig3-prose, results = "asis"}
+tb <- tl |> filter(method == "turnbull", estimand == "surv", arm == "core")
+if (nrow(tb)) {
+  cat(sprintf(
+    "Turnbull mean equivalence-class half-gap (scoring ambiguity) ranges %.3f-%.3f across core cells.\n",
+    min(pw$mean_ambiguity[pw$method == "turnbull"], na.rm = TRUE),
+    max(pw$mean_ambiguity[pw$method == "turnbull"], na.rm = TRUE)
+  ))
+}
+```
+
+## Fig 4: CI width and avSE/empSE (the mechanism)
+
+```{r fig4}
+d4 <- tl |>
+  filter(arm == "core", estimand == "surv",
+         method %in% c("mi", "midpoint", "oracle", "ic_par")) |>
+  pivot_longer(c(mean_width, se_ratio), names_to = "what")
+ggplot(d4, aes(mean_int, value, colour = method)) +
+  geom_point(size = 2) + geom_line(alpha = .5) +
+  facet_grid(what ~ baseline + effect + n, scales = "free_y") +
+  scale_colour_manual(values = cols) +
+  labs(
+    x = "mean inspection-interval length", y = NULL,
+    title = "S(t|x): mean CI width and avSE/empSE ratio",
+    subtitle = "se_ratio < 1: model-based SE understates sampling variability"
+  )
+```
+
+## Fig 5: time-varying effect recovery
+
+```{r fig5}
+lf_file <- file.path(bench_dir, "results", "least-false.rds")
+d5 <- pw |>
+  filter(effect == "tv", estimand == "logHR", n == 300,
+         method %in% c("mi", "midpoint", "oracle", "ic_par"))
+p5 <- ggplot(d5, aes(t, bias, colour = method)) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
+  geom_pointrange(aes(ymin = bias - bias_mcse, ymax = bias + bias_mcse),
+    position = position_dodge(width = 0.3)
+  ) +
+  facet_grid(baseline ~ rate) +
+  scale_colour_manual(values = cols) +
+  labs(
+    x = "t", y = "bias of logHR(t)",
+    title = "TV cells: pointwise bias of logHR(t) estimates (n = 300)",
+    subtitle = "ic_par estimates a constant: its 'bias' is estimand mismatch"
+  )
+print(p5)
+```
+
+```{r fig5-prose, results = "asis"}
+if (file.exists(lf_file)) {
+  lf <- readRDS(lf_file)
+  cat(sprintf(
+    "Least-false constant logHR projections (exact-time convention): Cox %.3f, Weibull %.3f.\n",
+    lf$lf_cox[1], lf$lf_weibull[1]
+  ))
+} else {
+  cat("Least-false projections not yet computed (results/least-false.rds missing).\n")
+}
+```
+
+## Fig 6: competing risks, smooth f(x), m-sensitivity
+
+```{r fig6a}
+d6 <- tl |> filter(arm %in% c("cr", "cr_unknown"), !is.na(coverage))
+ggplot(d6, aes(mean_int, coverage, colour = method, shape = arm)) +
+  geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+  geom_pointrange(aes(
+    ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
+  ), position = position_dodge(width = 0.1)) +
+  facet_wrap(~estimand, nrow = 1) +
+  scale_colour_manual(values = cols) +
+  coord_cartesian(ylim = c(0.4, 1)) +
+  labs(
+    x = "mean inspection-interval length", y = "95% CI coverage",
+    title = "Competing-risks arm (triangle: 30% unknown causes)"
+  )
+```
+
+```{r fig6b, fig-height: 4}
+d6b <- tl |> filter(arm == "smooth", estimand == "f_x")
+if (nrow(d6b)) {
+  ggplot(d6b, aes(factor(rate), coverage, colour = method)) +
+    geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+    geom_pointrange(aes(
+      ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
+    ), position = position_dodge(width = 0.3)) +
+    scale_colour_manual(values = cols) +
+    coord_cartesian(ylim = c(0.4, 1)) +
+    labs(
+      x = "inspection rate", y = "95% CI coverage",
+      title = "Smooth f(x) coverage (spoke S, grid-avg over x)"
+    )
+}
+```
+
+```{r fig6c, fig-height: 4}
+d6c <- tl |>
+  filter(arm == "mimp" | cell_id == "core-peaked-ph-random-r0.6-n300-m10",
+         method == "mi", estimand %in% c("surv", "hazard", "beta"))
+if (nrow(d6c)) {
+  ggplot(d6c, aes(factor(m), coverage, colour = estimand)) +
+    geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+    geom_pointrange(aes(
+      ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
+    ), position = position_dodge(width = 0.3)) +
+    coord_cartesian(ylim = c(0.7, 1)) +
+    labs(
+      x = "number of imputations m", y = "95% CI coverage",
+      title = "m-sensitivity (spoke I; peaked, PH, rate 0.6, n = 300)"
+    )
+}
+```
+
+## Term-level summary tables
+
+```{r tables, results = "asis"}
+for (es in unique(tl$estimand)) {
+  cat(sprintf("\n### %s\n\n", es))
+  print(knitr::kable(
+    tl |>
+      filter(estimand == es) |>
+      mutate(
+        coverage = sprintf("%.3f (%.3f)", coverage, coverage_mcse),
+        bias = sprintf("%.4f (%.4f)", bias, bias_mcse)
+      ) |>
+      select(cell_id, method, n_rep, coverage, bias, rmse, se_ratio,
+             mean_width, misspecified),
+    digits = 3
+  ))
+}
+```
+
+## Session / run metadata
+
+```{r meta, results = "asis"}
+cat(sprintf("- raw rows: %d\n", res$n_raw_rows))
+cat(sprintf("- max reps/cell: %d\n", n_rep_prod))
+cat(sprintf("- median fit times by method (s): %s\n",
+  tl |> group_by(method) |> summarise(t = median(mean_fit_time, na.rm = TRUE)) |>
+    (\(d) paste(sprintf("%s %.1f", d$method, d$t), collapse = ", "))()
+))
+```
