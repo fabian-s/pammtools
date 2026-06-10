@@ -18,7 +18,10 @@ n_cores <- if (length(args) >= 2) {
   max(1L, parallel::detectCores() - 1L)
 }
 
+ic_lib <- Sys.getenv("IC_BENCH_LIB")
+if (nzchar(ic_lib)) .libPaths(c(ic_lib, .libPaths()))
 suppressMessages(library(pammtools))
+stopifnot(exists("pamm_ic")) # guard against a shadowing pammtools install
 bench_dir <- if (file.exists("attic/ic-benchmark/config.R")) {
   "attic/ic-benchmark"
 } else {
