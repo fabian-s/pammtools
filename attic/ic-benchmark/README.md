@@ -132,4 +132,6 @@ pilot subsets use the same seeds as production. RNGkind is pinned.
 
 | 2026-06-10 | P0 outcome: ALL statistical gates passed (oracle & near-exact-MI coverage 0.937–0.942 for surv/hazard/beta, exact-truth vs KM ≤ 0.0016, Turnbull cross-check, icenReg API invariants). The 98%-completion criterion failed locally (191/200) due to fork OOM kills on the 15 GB workstation — no statistical failures; rerun submitted on LRZ (job 5256433) for the record. Production proceeds on the statistical verdict. |
 
+| 2026-06-10 | nsim sensitivity (LRZ job 5256447, 20 reps, peaked/ph/r0.6/n300): coverage identical across nsim ∈ {200, 500, 1000} (max diff 0.015, ≪ MC SE) for all methods × estimands — production nsim = 500 confirmed. **ADEMP FROZEN; production launched** (500 reps × 39 cells; reps 1–20 resume from the pilot in 37 cells, mixed-mechanism cells re-run fresh under the corrected schedule). |
+
 ADEMP is locked at Gate R2 (pre-production); any later change goes in this log.
