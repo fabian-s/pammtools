@@ -216,11 +216,13 @@ if (nrow(d5) > 0) {
 
 ```{r fig5-prose, results = "asis"}
 if (file.exists(lf_file)) {
-  lf <- readRDS(lf_file)
-  cat(sprintf(
-    "Least-false constant logHR projections (exact-time convention): Cox %.3f, Weibull %.3f.\n",
-    lf$lf_cox[1], lf$lf_weibull[1]
-  ))
+  lf <- readRDS(lf_file) |> distinct(baseline, lf_cox, lf_weibull)
+  for (i in seq_len(nrow(lf))) {
+    cat(sprintf(
+      "- %s baseline: least-false constant logHR (exact-time convention): Cox %.3f, Weibull %.3f\n",
+      lf$baseline[i], lf$lf_cox[i], lf$lf_weibull[i]
+    ))
+  }
 } else {
   cat("Least-false projections not yet computed (results/least-false.rds missing).\n")
 }

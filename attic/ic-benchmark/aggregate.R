@@ -118,7 +118,17 @@ term_level <- ok |>
   group_by(cell_id, method, estimand) |>
   group_modify(function(d, g) {
     cl <- mcse_coverage_clustered(d[!is.na(d$covered), ])
-    rr <- avse_empse_ratio(d$se, d$err)
+    # avSE/empSE must be computed WITHIN each (t, x) grid point and then
+    # summarized: pooling errors across the grid mixes cross-point bias
+    # heterogeneity into "empSE" and invalidates the ratio (R2 finding)
+    ptw <- d |>
+      group_by(t, x) |>
+      summarise(
+        r = sqrt(mean(se^2, na.rm = TRUE)) / stats::sd(err, na.rm = TRUE),
+        e = stats::sd(err, na.rm = TRUE),
+        a = sqrt(mean(se^2, na.rm = TRUE)),
+        .groups = "drop"
+      )
     tibble(
       n_rep = n_distinct(d$rep),
       bias = mean(d$err, na.rm = TRUE),
@@ -127,9 +137,9 @@ term_level <- ok |>
         stats::sd(per, na.rm = TRUE) / sqrt(sum(is.finite(per)))
       },
       rmse = rmse_of(d$err),
-      empSE = rr$empSE,
-      avSE = rr$avSE,
-      se_ratio = rr$ratio,
+      empSE = stats::median(ptw$e, na.rm = TRUE),
+      avSE = stats::median(ptw$a, na.rm = TRUE),
+      se_ratio = stats::median(ptw$r, na.rm = TRUE),
       coverage = cl$coverage,
       coverage_mcse = cl$mcse,
       mean_width = mean(d$width, na.rm = TRUE),

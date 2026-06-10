@@ -87,11 +87,22 @@ cells_mech <- expand_grid(
     baseline = "peaked",
     effect = "ph",
     n = 300L,
-    # for "mixed", add_inspections jitters by U(0, 1/rate): set rate = 1/gap
+    # for "mixed", add_inspections jitters by +U(0, 1/rate): set rate = 1/gap
+    # AND start the schedule at 0 so the offset phase-randomizes the grid
+    # within the first gap (a schedule starting at `gap` would push the first
+    # inspection into (gap, 2*gap] -- R2 finding)
     rate = ifelse(sched_lab == "dense", 1.5, 0.3),
-    schedule = map(
+    schedule = map2(
       sched_lab,
-      \(s) if (s == "dense") SCHED_DENSE else SCHED_SPARSE
+      mechanism,
+      \(s, mech) {
+        gap <- if (s == "dense") 2 / 3 else 10 / 3
+        if (mech == "mixed") {
+          seq(0, HORIZON, by = gap)
+        } else {
+          seq(gap, HORIZON, by = gap)
+        }
+      }
     ),
     arm = "mech",
     model_type = "ph",
