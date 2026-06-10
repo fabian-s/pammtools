@@ -87,6 +87,8 @@ pointwise <- ok |>
   group_by(cell_id, method, estimand, t, x, misspecified) |>
   summarise(
     n_rep = sum(is.finite(err)),
+    truth = first(truth),
+    mean_est = mean(est, na.rm = TRUE),
     bias = mean(err, na.rm = TRUE),
     bias_mcse = stats::sd(err, na.rm = TRUE) / sqrt(n_rep),
     empSE = stats::sd(err, na.rm = TRUE),
@@ -132,6 +134,8 @@ term_level <- ok |>
         a = sqrt(mean(se^2, na.rm = TRUE)),
         .groups = "drop"
       )
+    per_sq <- tapply(d$err^2, d$rep, mean, na.rm = TRUE)
+    rmse <- rmse_of(d$err)
     tibble(
       n_rep = n_distinct(d$rep),
       bias = mean(d$err, na.rm = TRUE),
@@ -139,13 +143,38 @@ term_level <- ok |>
         per <- tapply(d$err, d$rep, mean, na.rm = TRUE)
         stats::sd(per, na.rm = TRUE) / sqrt(sum(is.finite(per)))
       },
-      rmse = rmse_of(d$err),
+      rmse = rmse,
+      # delta-method MC SE for RMSE from rep-clustered mean squared errors
+      rmse_mcse = stats::sd(per_sq, na.rm = TRUE) /
+        (2 * rmse * sqrt(sum(is.finite(per_sq)))),
       empSE = stats::median(ptw$e, na.rm = TRUE),
       avSE = stats::median(ptw$a, na.rm = TRUE),
       se_ratio = stats::median(ptw$r, na.rm = TRUE),
       coverage = cl$coverage,
       coverage_mcse = cl$mcse,
-      mean_width = mean(d$width, na.rm = TRUE),
+      # bias-eliminated coverage (audits bias-vs-variance attribution):
+      # mean over grid points of pointwise BE coverage
+      be_coverage = {
+        bec <- d |>
+          group_by(t, x) |>
+          summarise(
+            v = mean(
+              lower <= mean(est, na.rm = TRUE) &
+                mean(est, na.rm = TRUE) <= upper,
+              na.rm = TRUE
+            ),
+            .groups = "drop"
+          )
+        mean(bec$v, na.rm = TRUE)
+      },
+      # widths summarized robustly: single pathological reps (vacuous CIs in
+      # weakly-identified cells) make raw means meaningless (R3 finding)
+      median_width = stats::median(d$width, na.rm = TRUE),
+      width_q90 = stats::quantile(d$width, 0.9, na.rm = TRUE),
+      prop_width_extreme = mean(
+        d$width > 10 * stats::median(d$width, na.rm = TRUE),
+        na.rm = TRUE
+      ),
       mean_fit_time = mean(d$fit_time, na.rm = TRUE),
       misspecified = any(d$misspecified, na.rm = TRUE)
     )

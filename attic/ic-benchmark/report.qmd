@@ -80,7 +80,7 @@ ggplot(d1, aes(mean_int, coverage, colour = method, shape = misspecified)) +
   facet_grid(estimand + n ~ baseline + effect) +
   scale_colour_manual(values = cols) +
   scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1)) +
-  coord_cartesian(ylim = c(0.4, 1)) +
+  coord_cartesian(ylim = c(0, 1)) +
   labs(
     x = "mean inspection-interval length", y = "95% CI coverage (grid-avg)",
     colour = NULL, shape = "misspecified",
@@ -112,7 +112,7 @@ ggplot(d2, aes(mean_int, coverage, colour = method, shape = misspecified)) +
   facet_grid(estimand + n ~ baseline + effect) +
   scale_colour_manual(values = cols) +
   scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1)) +
-  coord_cartesian(ylim = c(0.4, 1)) +
+  coord_cartesian(ylim = c(0, 1)) +
   labs(
     x = "mean inspection-interval length", y = "95% CI coverage",
     title = "Covariate-effect coverage (beta in PH cells, logHR(t) grid-avg)",
@@ -123,7 +123,7 @@ ggplot(d2, aes(mean_int, coverage, colour = method, shape = misspecified)) +
 ```{r fig2b, fig-height: 4}
 ggplot(
   paired |> filter(arm == "core"),
-  aes(factor(rate), diff, colour = estimand)
+  aes(factor(rate, levels = c(1.5, 0.6, 0.3)), diff, colour = estimand)
 ) +
   geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
   geom_pointrange(aes(ymin = diff - diff_mcse, ymax = diff + diff_mcse),
@@ -162,8 +162,19 @@ ggplot(d3, aes(mean_int, rrmse, colour = method, shape = misspecified)) +
 ```{r fig3-prose, results = "asis"}
 tb <- tl |> filter(method == "turnbull", estimand == "surv", arm == "core")
 if (nrow(tb)) {
+  rr <- d3 |>
+    filter(method %in% c("mi", "midpoint", "turnbull")) |>
+    group_by(method) |>
+    summarise(med_rrmse = median(rrmse, na.rm = TRUE), .groups = "drop")
+  n_tb_beats_mi <- d3 |>
+    select(cell_id, method, rrmse) |>
+    pivot_wider(names_from = method, values_from = rrmse) |>
+    summarise(v = sum(turnbull < mi, na.rm = TRUE), n = sum(!is.na(turnbull)))
   cat(sprintf(
-    "Turnbull mean equivalence-class half-gap (scoring ambiguity) ranges %.3f-%.3f across core cells.\n",
+    "Median RRMSE vs oracle: MI %.2f, midpoint %.2f, Turnbull %.2f; Turnbull beats MI in %d/%d core cells (it is a step-function NPMLE without smoothing). Turnbull mean equivalence-class half-gap (scoring ambiguity) ranges %.3f-%.3f across core cells.\n",
+    rr$med_rrmse[rr$method == "mi"], rr$med_rrmse[rr$method == "midpoint"],
+    rr$med_rrmse[rr$method == "turnbull"],
+    n_tb_beats_mi$v, n_tb_beats_mi$n,
     min(pw$mean_ambiguity[pw$method == "turnbull"], na.rm = TRUE),
     max(pw$mean_ambiguity[pw$method == "turnbull"], na.rm = TRUE)
   ))
@@ -176,14 +187,14 @@ if (nrow(tb)) {
 d4 <- tl |>
   filter(arm == "core", estimand == "surv",
          method %in% c("mi", "midpoint", "oracle", "ic_par")) |>
-  pivot_longer(c(mean_width, se_ratio), names_to = "what")
+  pivot_longer(c(median_width, se_ratio), names_to = "what")
 ggplot(d4, aes(mean_int, value, colour = method)) +
   geom_point(size = 2) + geom_line(alpha = .5) +
   facet_grid(what ~ baseline + effect + n, scales = "free_y") +
   scale_colour_manual(values = cols) +
   labs(
     x = "mean inspection-interval length", y = NULL,
-    title = "S(t|x): mean CI width and avSE/empSE ratio",
+    title = "S(t|x): median CI width and avSE/empSE ratio (median over grid)",
     subtitle = "se_ratio < 1: model-based SE understates sampling variability"
   )
 ```
@@ -196,18 +207,34 @@ d5 <- pw |>
   filter(effect == "tv", estimand == "logHR", n == 300,
          method %in% c("mi", "midpoint", "oracle", "ic_par"))
 if (nrow(d5) > 0) {
-  p5 <- ggplot(d5, aes(t, bias, colour = method)) +
-    geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
-    geom_pointrange(aes(ymin = bias - bias_mcse, ymax = bias + bias_mcse),
+  lf_lines <- if (file.exists(lf_file)) {
+    readRDS(lf_file) |>
+      distinct(baseline, lf_cox) |>
+      semi_join(d5, by = "baseline")
+  } else {
+    NULL
+  }
+  p5 <- ggplot(d5, aes(t, mean_est, colour = method)) +
+    geom_line(aes(y = truth), colour = "black", linewidth = 0.9) +
+    geom_pointrange(
+      aes(ymin = mean_est - bias_mcse, ymax = mean_est + bias_mcse),
       position = position_dodge(width = 0.3)
     ) +
+    geom_line(alpha = 0.5, position = position_dodge(width = 0.3)) +
     facet_grid(baseline ~ rate) +
     scale_colour_manual(values = cols) +
     labs(
-      x = "t", y = "bias of logHR(t)",
-      title = "TV cells: pointwise bias of logHR(t) estimates (n = 300)",
-      subtitle = "ic_par estimates a constant: its 'bias' is estimand mismatch"
+      x = "t", y = "logHR(t)",
+      title = "TV cells: mean estimated logHR(t) vs truth (black), n = 300",
+      subtitle = "dashed grey: least-false constant (Cox projection) -- ic_par's actual target"
     )
+  if (!is.null(lf_lines)) {
+    p5 <- p5 +
+      geom_hline(
+        data = lf_lines, aes(yintercept = lf_cox),
+        linetype = 2, colour = "grey50"
+      )
+  }
   print(p5)
 } else {
   cat("(no TV-cell data in this run)")
@@ -239,7 +266,7 @@ ggplot(d6, aes(mean_int, coverage, colour = method, shape = arm)) +
   ), position = position_dodge(width = 0.1)) +
   facet_wrap(~estimand, nrow = 1) +
   scale_colour_manual(values = cols) +
-  coord_cartesian(ylim = c(0.4, 1)) +
+  coord_cartesian(ylim = c(0, 1)) +
   labs(
     x = "mean inspection-interval length", y = "95% CI coverage",
     title = "Competing-risks arm (triangle: 30% unknown causes)"
@@ -255,7 +282,7 @@ if (nrow(d6b)) {
       ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
     ), position = position_dodge(width = 0.3)) +
     scale_colour_manual(values = cols) +
-    coord_cartesian(ylim = c(0.4, 1)) +
+    coord_cartesian(ylim = c(0, 1)) +
     labs(
       x = "inspection rate", y = "95% CI coverage",
       title = "Smooth f(x) coverage (spoke S, grid-avg over x)"
@@ -291,10 +318,11 @@ for (es in unique(tl$estimand)) {
       filter(estimand == es) |>
       mutate(
         coverage = sprintf("%.3f (%.3f)", coverage, coverage_mcse),
-        bias = sprintf("%.4f (%.4f)", bias, bias_mcse)
+        bias = sprintf("%.4f (%.4f)", bias, bias_mcse),
+        rmse = sprintf("%.4f (%.4f)", rmse, rmse_mcse)
       ) |>
-      select(cell_id, method, n_rep, coverage, bias, rmse, se_ratio,
-             mean_width, misspecified),
+      select(cell_id, method, n_rep, coverage, be_coverage, bias, rmse,
+             se_ratio, median_width, misspecified),
     digits = 3
   ))
 }
