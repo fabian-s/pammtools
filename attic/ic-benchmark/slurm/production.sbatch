@@ -2,7 +2,7 @@
 #SBATCH -J ic-bench
 #SBATCH -o attic/ic-benchmark/logs/%x.%A_%a.out
 #SBATCH -e attic/ic-benchmark/logs/%x.%A_%a.err
-#SBATCH -D /dss/dsshome1/lxc04/ri68suz2/pammtools
+#SBATCH -D /dss/dsshome1/lxc04/ri68suz2/pammtools-icbench
 #SBATCH --get-user-env
 #SBATCH --clusters=serial
 #SBATCH --partition=serial_std
@@ -22,7 +22,7 @@
 module load slurm_setup
 module load r/4.3.3-gcc13-mkl
 
-export R_LIBS_USER="${HOME}/R/x86_64-pc-linux-gnu-library/4.3"
+export R_LIBS_USER="${HOME}/R/ic-bench-lib:${HOME}/R/x86_64-pc-linux-gnu-library/4.3"
 # MKL x mclapply oversubscription guard
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
