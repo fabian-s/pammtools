@@ -521,7 +521,7 @@ wr <- f4 |>
   pivot_wider(names_from = method, values_from = median_width) |>
   mutate(r = mi / midpoint)
 cat(sprintf(
-  "**Interpretation.** Model-based SEs are essentially honest for every method: se_ratio spans %.2f-%.2f across all core cells and methods, so no method fails by understating its own sampling variability -- coverage failures in Figs 1-2 are point-estimate bias, not SE failure. What separates MI from midpoint mechanically is the width column: MI intervals are wider by a median factor of %.2f (median %.2f in the sparsest cells), which is exactly the propagated imputation uncertainty that midpoint discards. Midpoint's narrower intervals around biased point estimates produce its coverage collapse; MI's wider intervals buy back most -- not all -- of it.\n",
+  "**Interpretation.** Model-based SEs for S(t|x) are essentially honest for every method: se_ratio spans %.2f-%.2f across all core cells and methods, so no method fails by understating its own sampling variability here -- the S(t|x) coverage failures of Fig 1 are point-estimate bias, not SE failure. (This panel analyzes S(t|x) only; the other estimands' SE calibration is wider but their failures are likewise bias-dominated -- see the ANOVA section and appendix tables.) What separates MI from midpoint mechanically is the width column: MI intervals are wider by a median factor of %.2f (median %.2f in the sparsest cells), which is exactly the propagated imputation uncertainty that midpoint discards. Midpoint's narrower intervals around biased point estimates produce its coverage collapse; MI's wider intervals buy back most -- not all -- of it.\n",
   sr[1], sr[2], median(wr$r), median(wr$r[wr$rate == 0.3])
 ))
 ```
@@ -659,11 +659,14 @@ cr_cmp <- tl |>
     d = coverage_cr_unknown - coverage_cr,
     lim = 2 * sqrt(coverage_mcse_cr^2 + coverage_mcse_cr_unknown^2)
   )
+cif_sp <- tl |>
+  filter(arm == "cr", method == "mi", estimand == "cif1", rate == 0.3)
 cat(sprintf(
-  "**Competing risks (Fig 6a).** pamm_ic_cr's MI coverage spans %.3f-%.3f across CIF_1/CIF_2/beta_1/beta_2 and inspection rates (vs oracle %.3f-%.3f), so the cause-specific MI pipeline carries the single-event validity over. Masking 30%% of causes (cr_unknown, triangles) changes MI coverage by at most %+.3f vs the matched known-cause cell (all |differences| within 2 MC SE: %s) -- the cause-imputation branch neither breaks nor visibly degrades inference at this masking level.\n",
+  "**Competing risks (Fig 6a).** pamm_ic_cr's MI coverage spans %.3f-%.3f across CIF_1/CIF_2/beta_1/beta_2 and inspection rates (vs oracle %.3f-%.3f): the cause-specific MI pipeline broadly mirrors the single-event behaviour, including its sparse-cell bias signature (CIF_1 at rate 0.3: coverage %.3f, bias-eliminated %.3f). Masking 30%% of causes (cr_unknown, triangles) changes MI coverage by at most %+.3f vs the matched known-cause cell (all |differences| within 2 MC SE: %s) -- the cause-imputation branch neither breaks nor visibly degrades inference at this masking level.\n",
   min(cr_mi$coverage), max(cr_mi$coverage),
   min(tl$coverage[tl$arm == "cr" & tl$method == "oracle"]),
   max(tl$coverage[tl$arm == "cr" & tl$method == "oracle"]),
+  cif_sp$coverage, cif_sp$be_coverage,
   cr_cmp$d[which.max(abs(cr_cmp$d))],
   ifelse(all(abs(cr_cmp$d) < cr_cmp$lim), "yes", "NO")
 ))
@@ -672,11 +675,12 @@ cat(sprintf(
 d6b2 <- tl |> filter(arm == "smooth", estimand == "f_x")
 if (nrow(d6b2)) {
   s6 <- d6b2 |>
+    arrange(desc(rate)) |>
     group_by(method) |>
     summarise(txt = paste(sprintf("%.3f", coverage), collapse = "/"),
               .groups = "drop")
   cat(sprintf(
-    "\n**Smooth f(x) (Fig 6b).** Coverage at rates 1.5/0.3: %s. The nonlinear covariate effect is the least IC-sensitive estimand, as anticipated in the design: it does not vary over time, so coarsening event times barely touches it.\n",
+    "\n**Smooth f(x) (Fig 6b).** Coverage at rates 1.5/0.3: %s. The smooth covariate effect is essentially IC-insensitive, as anticipated in the design (it does not vary over time, so coarsening event times barely touches it): every method tracks the oracle, though all sit a few MC SE below nominal, oracle included -- a spline/smoothing property, not an interval-censoring one.\n",
     paste(sprintf("%s %s", s6$method, s6$txt), collapse = "; ")
   ))
 }
@@ -711,7 +715,8 @@ for each suitable performance measure. The factorial is fully crossed and
 balanced within each method subset, so the sums-of-squares decomposition is
 order-invariant; we report each term's share of total SS (η², in %). One
 observation = one (cell, method) summary, so "Residuals" collects all
-three-way-and-higher interactions. This is a *descriptive* variance
+three-way-and-higher interactions plus the Monte Carlo error of the
+cell-level summaries. This is a *descriptive* variance
 decomposition (no inferential F-tests are warranted at n = 1 summary per
 cell × method); ic_par's designed misspecification is part of the design and
 shows up in the method interactions.
@@ -792,7 +797,7 @@ mi_md_sr <- tl |>
   group_by(grp = method %in% c("mi", "ic_par")) |>
   summarise(med = median(se_ratio), .groups = "drop")
 cat(sprintf(
-  "\n**Interpretation.** *Coverage* differences are overwhelmingly about *which method meets which inspection regime and baseline shape*: for S(t|x), the method main effect plus its rate and baseline interactions carry %.0f%% of the variation (method %.0f%%, method:baseline %.0f%%, method:rate %.0f%%), while all purely-DGP terms together explain only %.0f%% -- a good method is simply robust where a bad one is not. method:baseline is the parametric-misspecification axis (ic_par's Weibull vs the peaked baseline); method:rate is the MI-vs-midpoint sparsity-robustness story of Fig 1. Hazard coverage adds a genuine baseline main effect (%.0f%%): the peaked shape is harder for *everyone*, including the oracle (the smoothing ceiling). *Point accuracy* (log RRMSE vs oracle) is structured differently: inspection rate itself is the largest single term (%.0f%%) -- coarser information costs every method accuracy relative to the oracle -- followed by the misspecification axis method:baseline (%.0f%%), while the method main effect is modest (%.0f%%): apart from parametric misspecification, the IC approaches are closer in accuracy than their coverage gaps suggest. The *avSE/empSE* column has a method term (%.0f%%) but decomposes an SD of just %.3f: a tiny systematic level shift (MI/ic_par median %.2f, midpoint/oracle %.2f) of no practical consequence -- SE calibration is fine everywhere, so every coverage failure in this study is a point-estimate-bias failure. Finally, n terms stay <= %.0f%% in every column: with bias-driven failures, more data does not help; it sharpens the interval around the wrong value.\n",
+  "\n**Interpretation.** *Coverage* differences are overwhelmingly about *which method meets which inspection regime and baseline shape*: for S(t|x), the method main effect plus its rate and baseline interactions carry %.0f%% of the variation (method %.0f%%, method:baseline %.0f%%, method:rate %.0f%%), while all purely-DGP terms together explain only %.0f%% -- a good method is simply robust where a bad one is not. method:baseline is the parametric-misspecification axis (ic_par's Weibull vs the peaked baseline); method:rate is the MI-vs-midpoint sparsity-robustness story of Fig 1. Hazard coverage adds a genuine baseline main effect (%.0f%%): the peaked shape is harder for *everyone*, including the oracle (the smoothing ceiling). *Point accuracy* (log RRMSE vs oracle) is structured differently: inspection rate itself is the largest single term (%.0f%%) -- coarser information costs every method accuracy relative to the oracle -- followed by the misspecification axis method:baseline (%.0f%%), while the method main effect is modest (%.0f%%): apart from parametric misspecification, the IC approaches are closer in accuracy than their coverage gaps suggest. The *avSE/empSE* column has a method term (%.0f%%) but decomposes an SD of just %.3f: a tiny systematic level shift (MI/ic_par median %.2f, midpoint/oracle %.2f) of no practical consequence. S(t|x) SE calibration is thus sound for every method, so its coverage failures are point-estimate-bias failures; bias-eliminated coverage >= %.2f across every core CI-method summary says the same of the dominant failures for the other estimands. (The RRMSE column's method set additionally contains the point-only ic_sp and Turnbull.) Finally, n terms stay <= %.0f%% in every column: with bias-driven failures, more data does not help; it sharpens the interval around the wrong value.\n",
   g2("coverage S(t|x)", "method") + g2("coverage S(t|x)", "method:rate") +
     g2("coverage S(t|x)", "method:baseline"),
   g2("coverage S(t|x)", "method"),
@@ -808,6 +813,8 @@ cat(sprintf(
   g2("log avSE/empSE S(t|x)", "method"),
   sds[["log avSE/empSE S(t|x)"]],
   mi_md_sr$med[mi_md_sr$grp], mi_md_sr$med[!mi_md_sr$grp],
+  min(tl$be_coverage[tl$arm == "core" & tl$method %in% ci_methods],
+      na.rm = TRUE),
   max(purrr::map_dbl(names(etas), \(nm) max(g2(nm, "n"), g2(nm, "method:n"))))
 ))
 ```
@@ -836,16 +843,34 @@ cr_rng <- range(
   tl$coverage[tl$arm %in% c("cr", "cr_unknown") & tl$method == "mi"],
   na.rm = TRUE
 )
+rr_c <- tl |>
+  filter(arm == "core", estimand == "surv") |>
+  left_join(
+    tl |>
+      filter(arm == "core", estimand == "surv", method == "oracle") |>
+      select(cell_id, rmse_o = rmse),
+    by = "cell_id"
+  ) |>
+  mutate(rrmse = rmse / rmse_o)
+rr_med <- rr_c |>
+  filter(method %in% c("mi", "midpoint", "turnbull")) |>
+  group_by(method) |>
+  summarise(m = median(rrmse), .groups = "drop")
+rrm <- function(x) rr_med$m[rr_med$method == x]
+tb_v_mi <- rr_c |>
+  select(cell_id, method, rrmse) |>
+  pivot_wider(names_from = method, values_from = rrmse) |>
+  summarise(v = sum(turnbull < mi, na.rm = TRUE), n = sum(!is.na(turnbull)))
 cat(sprintf(
-"1. **The MI workflow is valid where its imputation model has enough to work with.** Under dense inspection (mean gap 0.67) MI attains %.3f-%.3f coverage across survival, beta and logHR(t) in every core cell; at moderate sparsity (mean gap 1.7) survival coverage is still %.3f-%.3f. Competing-risks CIFs and cause-specific effects stay at %.2f-%.2f (incl. with 30%% masked causes), smooth f(x) is nominal, and results are insensitive to m in {5, 10, 20}.
+"1. **The MI workflow is valid where its imputation model has enough to work with.** Under dense inspection (mean gap 0.67) MI attains %.3f-%.3f coverage across survival, beta and logHR(t) in every core cell; at moderate sparsity (mean gap 1.7) survival coverage is still %.3f-%.3f. Competing-risks CIFs and cause-specific effects stay at %.2f-%.2f (incl. with 30%% masked causes), smooth f(x) tracks the oracle, and results are insensitive to m in {5, 10, 20}.
 
 2. **MI clearly beats the naive midpoint default** -- the comparison that matters for practice, since midpoint imputation is what people actually do. Under sparse inspection the paired coverage gain for S/hazard is %+.3f to %+.3f (paired MC SE <= %.3f), and midpoint is never significantly better on any estimand anywhere. The mechanism is fully diagnosed: midpoint discards imputation uncertainty (too-narrow CIs, Fig 4) around structurally biased point estimates; MI propagates the uncertainty and partly de-biases.
 
 3. **The honest limitation: one-step MI under sparse inspection.** With mean inspection gaps of ~3.3, MI's point estimates inherit bias from the midpoint-initialized imputation fit, concentrated at early-to-mid t; SEs stay honest (be_coverage nominal, se_ratio ~ 1), so coverage *falls as n grows* (const-ph: %.3f at n=300 vs %.3f at n=1000) -- and Turnbull recovers S(1) on the same data. This motivates the iterated (refit-and-reimpute) extension scoped in the README; the per-(rep, method) seed substreams make it a drop-in addition over the same simulated data.
 
-4. **External comparators behave exactly as theory says.** ic_par is nominal wherever its Weibull is correct (const cells: %.3f-%.3f at every rate, n) and fails under the peaked baseline (%.3f-%.3f) with no rescue from n -- the cost of parametric convenience. The Turnbull NPMLE is the accuracy benchmark for plain S(t|x) but offers no smoothing, no covariate model and no CIs; MI's RRMSE sits between Turnbull and midpoint while providing full regression inference.
+4. **External comparators behave exactly as theory says.** ic_par is nominal wherever its Weibull is correct (const cells: %.3f-%.3f at every rate, n) and fails under the peaked baseline (%.3f-%.3f) with no rescue from n -- the cost of parametric convenience. On S(t|x) point accuracy MI leads the non-oracle field (median RRMSE vs oracle: MI %.2f, midpoint %.2f, Turnbull %.2f; Turnbull beats MI in only %d/%d core cells): the Turnbull NPMLE remains the assumption-free point-only reference, but buys no smoothing, no covariate model and no CIs, while MI alone provides full regression inference.
 
-5. **Practical guidance.** With inspection gaps up to about 2 time units (on this 10-unit horizon, i.e. ~5+ inspections per subject), pamm_ic inference can be used as-is for all estimands except the interval-average hazard near sharp peaks (a smoothing, not an IC, limitation -- the oracle hits the same ceiling). With substantially sparser panels, treat early-time S(t|x) point estimates as optimistic until the iterated-MI extension lands; effect estimates (beta, logHR(t), f(x)) remain trustworthy longer than survival curves do.
+5. **Practical guidance.** Under dense inspection (mean gap <= ~0.7 on this 10-unit horizon) pamm_ic inference can be used as-is for all estimands except the interval-average hazard near sharp peaks (a smoothing, not an IC, limitation -- the oracle hits the same ceiling). Already at moderate sparsity (mean gap ~1.7) the early-time bias begins to show: survival coverage dips to %.3f in the worst core cell (large n, bias-driven) even though effect estimates stay reliable. With sparser panels still, treat early-time S(t|x) point estimates as optimistic until the iterated-MI extension lands; effect estimates (beta, logHR(t), f(x)) remain trustworthy longer than survival curves do.
 
 6. **Methodological note.** The three-gate review process earned its keep: the final gate caught an informative-censoring defect in the inspection DGP (decision log, 2026-06-11) precisely because the design included a *well-specified parametric comparator* whose coverage collapse could only mean a data-generation bug. Production was re-run on the corrected DGP; the pre-fix archive is retained for the paired comparison.\n",
   min(mi_dense$coverage), max(mi_dense$coverage),
@@ -854,7 +879,9 @@ cat(sprintf(
   min(pd_sp$diff), max(pd_sp$diff), max(pd_sp$diff_mcse),
   mi_sp_n$coverage[mi_sp_n$n == 300], mi_sp_n$coverage[mi_sp_n$n == 1000],
   min(icp_const$coverage), max(icp_const$coverage),
-  min(icp_peak$coverage), max(icp_peak$coverage)
+  min(icp_peak$coverage), max(icp_peak$coverage),
+  rrm("mi"), rrm("midpoint"), rrm("turnbull"), tb_v_mi$v, tb_v_mi$n,
+  min(ph_mid$coverage)
 ))
 ```
 
