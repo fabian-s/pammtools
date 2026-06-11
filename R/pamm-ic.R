@@ -33,8 +33,9 @@
 #'   \code{1} = classic one-step MI: all \code{m} imputations are drawn from the
 #'   single initialiser fit). For \code{iter = k > 1}, each chain alternates
 #'   imputation and re-fitting on its own completed data set \code{k} times, so
-#'   later imputations are drawn from a fit that no longer depends on the
-#'   midpoint initialiser -- a sequential ("chained") MI scheme that
+#'   later imputations are drawn from fits whose dependence on the midpoint
+#'   initialiser is progressively attenuated -- a sequential ("chained") MI
+#'   scheme that
 #'   progressively removes initialiser bias under sparse inspection, at roughly
 #'   \code{iter}-fold fitting cost. Simulation evidence (see the package's
 #'   interval-censoring benchmark): with inspection gaps that are small
@@ -42,7 +43,11 @@
 #'   (mean gap of order 1/3 of the follow-up), early-time survival estimates
 #'   from \code{iter = 1} are biased upward and \code{iter = 3} removes most
 #'   of that bias (\code{iter = 5} essentially all of it), with bias shrinking
-#'   roughly geometrically in \code{iter}.
+#'   roughly geometrically in \code{iter}. Caveat: with flexible time-varying
+#'   effect terms and small samples, iterating can occasionally amplify a
+#'   weakly identified imputation chain into divergent estimates with very
+#'   wide intervals (without \code{mgcv} warnings) -- inspect pooled smooth
+#'   effects for plausibility when iterating such models.
 #' @param proper Logical; if \code{TRUE} (default, "proper" MI) a coefficient
 #'   vector is drawn from the posterior \eqn{N(\hat\beta, V_\beta)} of the
 #'   fit the imputation is drawn from, propagating parameter uncertainty.
@@ -115,8 +120,8 @@ pamm_ic <- function(
   skeleton <- NULL
   n_obs <- NA_integer_
   for (mm in seq_len(m)) {
-    # chained MI: iteration k > 1 re-imputes from this chain's own re-fit, so
-    # the final imputation no longer depends on the midpoint initialiser.
+    # chained MI: iteration k > 1 re-imputes from this chain's own re-fit,
+    # progressively attenuating the midpoint initialiser's influence.
     # iter = 1 reproduces classic one-step MI draw-for-draw.
     fit_mm <- fit0
     cache_mm <- cache

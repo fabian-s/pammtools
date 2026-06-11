@@ -61,14 +61,30 @@ term_level <- ok |>
   group_by(cell_id, method, iter, estimand) |>
   group_modify(function(d, g) {
     cl <- mcse_coverage_clustered(d[!is.na(d$covered), ])
+    # blow-up guard (R3-ext finding): single numerically exploded fits (e.g.
+    # one iter-5 hazard estimate ~1e20 in a weakly identified sparse rep)
+    # would otherwise corrupt mean bias/RMSE while showing "0 failures";
+    # they are counted, excluded from moment summaries, kept for coverage
+    extreme <- !is.finite(d$est) | abs(d$est) > 1e6
+    n_extreme <- sum(extreme, na.rm = TRUE)
+    dm <- d[!extreme, ]
+    # avSE/empSE within each (t, x) grid point, then median (R2 rule)
+    ptw <- dm |>
+      group_by(t, x) |>
+      summarise(
+        r = sqrt(mean(se^2, na.rm = TRUE)) / stats::sd(err, na.rm = TRUE),
+        .groups = "drop"
+      )
     tibble(
       n_rep = n_distinct(d$rep),
-      bias = mean(d$err, na.rm = TRUE),
+      n_extreme = n_extreme,
+      bias = mean(dm$err, na.rm = TRUE),
       bias_mcse = {
-        per <- tapply(d$err, d$rep, mean, na.rm = TRUE)
+        per <- tapply(dm$err, dm$rep, mean, na.rm = TRUE)
         stats::sd(per, na.rm = TRUE) / sqrt(sum(is.finite(per)))
       },
-      rmse = rmse_of(d$err),
+      rmse = rmse_of(dm$err),
+      se_ratio = stats::median(ptw$r, na.rm = TRUE),
       coverage = cl$coverage,
       coverage_mcse = cl$mcse,
       be_coverage = {

@@ -709,8 +709,8 @@ The sparse-cell finding above (genuine one-step-MI bias at early t) motivated
 an extension over the *same simulated data*: `pamm_ic` gained an `iter`
 argument — `iter = 1` is the production one-step MI; `iter = k` alternates
 imputation and re-fitting within each imputation chain, so the final
-imputation no longer depends on the midpoint initialiser (chained MI, ~linear
-cost in `iter`). Scope (decision log, 2026-06-11): `mi_iter3` (`iter = 3`) at
+imputation's dependence on the midpoint initialiser is progressively
+attenuated (chained MI, ~linear cost in `iter`). Scope (decision log, 2026-06-11): `mi_iter3` (`iter = 3`) at
 500 reps on **all 24 core cells** (sparse cells = headline, dense cells =
 no-harm check) and `mi_iter5` at 500 reps on the **8 rate-0.3 cells**
 (convergence exhibit); both use the production per-rep data seeds, so every
@@ -802,8 +802,8 @@ if (has_iter) {
   md1 <- its$term_level |>
     filter(method == "mi", rate == 0.6, estimand == "surv")
   cat(sprintf(
-    "**Moderate sparsity (rate 0.6).** iter = 3 restores full nominal S(t|x) coverage: %.3f-%.3f across the four cells (one-step: %.3f-%.3f).\n\n",
-    min(md3$coverage), max(md3$coverage),
+    "**Moderate sparsity (rate 0.6).** iter = 3 restores near-nominal S(t|x) coverage: %.3f-%.3f across the %d cells (one-step: %.3f-%.3f) -- all within the pre-set +-2pp practical-significance threshold, though the lower end remains statistically below 0.95.\n\n",
+    min(md3$coverage), max(md3$coverage), nrow(md3),
     min(md1$coverage), max(md1$coverage)
   ))
   # sparse gains
@@ -818,12 +818,38 @@ if (has_iter) {
     select(cell_id, method, mean_fit_time) |>
     pivot_wider(names_from = method, values_from = mean_fit_time)
   cat(sprintf(
-    "**Sparse cells (rate 0.3).** iter = 3 lifts paired S(t|x) coverage by %+.3f to %+.3f; iter = 5 reaches grid-averaged coverage %.3f-%.3f across the 8 cells, with S(1|0) bias %+.3f to %+.3f (vs one-step's up to +0.07): the one-step early-t bias is an initialisation artifact that chained re-imputation removes, decaying roughly geometrically in iter. Median fit-time ratios vs one-step: iter 3 %.1fx, iter 5 %.1fx.\n",
+    "**Sparse cells (rate 0.3).** iter = 3 lifts paired S(t|x) coverage by %+.3f to %+.3f; iter = 5 reaches grid-averaged coverage %.3f-%.3f across the 8 cells, with S(1|0) bias %+.3f to %+.3f (vs one-step's up to +0.07). Iteration removes most of the early-time point bias -- decaying roughly geometrically in iter -- and greatly improves coverage, but does not fully restore it in the hardest cells (minimum %.3f at iter 5, still below nominal by more than 2 MC SE). Median fit-time ratios vs one-step: iter 3 %.1fx, iter 5 %.1fx.\n\n",
     min(sg$diff), max(sg$diff),
     min(it5c$coverage), max(it5c$coverage),
     min(it5b$bias), max(it5b$bias),
+    min(it5c$coverage),
     median(ft$mi_iter3 / ft$mi, na.rm = TRUE),
     median(ft$mi_iter5 / ft$mi, na.rm = TRUE)
+  ))
+  # what iteration does NOT cure: the hazard estimand under sparse inspection
+  hz5 <- its$term_level |>
+    filter(method == "mi_iter5", estimand == "hazard", baseline == "peaked")
+  orc5 <- tl |>
+    semi_join(hz5, by = "cell_id") |>
+    filter(method == "oracle", estimand == "hazard")
+  cat(sprintf(
+    "**Scope: what iteration does not cure.** The interval-average hazard at peaked baselines under sparse inspection stays sub-nominal even at iter = 5: grid-averaged coverage %.3f-%.3f in the peaked rate-0.3 cells, versus the *oracle's* %.3f-%.3f in the same cells. Unlike the dense-inspection hazard caveat of Fig 1 (a smoothing ceiling the oracle also hits), the sparse-cell residual gap lies *below* the oracle -- here the peak attenuation is genuine information loss from wide intervals, which no imputation scheme can recover. The iter = 3-5 recommendation concerns survival and effect estimands.\n\n",
+    min(hz5$coverage), max(hz5$coverage),
+    min(orc5$coverage), max(orc5$coverage)
+  ))
+  # iteration's own cost: divergent chains in flexible TV models at small n
+  ext_tab <- its$term_level |>
+    filter(n_extreme > 0) |>
+    select(cell_id, method, estimand, n_extreme)
+  lr_tv <- its$term_level |>
+    filter(estimand == "logHR", effect == "tv", n == 300) |>
+    select(cell_id, method, rmse) |>
+    pivot_wider(names_from = method, values_from = rmse)
+  cat(sprintf(
+    "**Iteration's own cost: occasional divergent chains.** In the flexible time-varying-effect models at n = 300, chained re-imputation occasionally amplifies a weakly identified chain instead of damping it: a small fraction of reps develop extreme logHR(t)/hazard estimates -- including one fully degenerate hazard fit at iter = 5, flagged via the n_extreme column (%d flagged summary/-ies) and excluded from moment summaries -- with *no* mgcv warnings. Even after excluding blow-ups, iter-5 logHR RMSE in the sparse TV n=300 cells is %.0f%%-%.0f%% of one-step's -- coverage is protected only because the same chains produce very wide intervals. Under sparse inspection with flexible TV terms and small n, iteration buys survival accuracy at the price of noisier time-varying effect estimates.\n",
+    nrow(ext_tab),
+    100 * min(lr_tv$mi_iter5 / lr_tv$mi, na.rm = TRUE),
+    100 * max(lr_tv$mi_iter5 / lr_tv$mi, na.rm = TRUE)
   ))
 }
 ```
@@ -992,11 +1018,14 @@ if (has_iter) {
     filter(method == "mi_iter3", rate == 0.3, estimand == "surv")
   it5b_c <- its$pointwise |>
     filter(method == "mi_iter5", estimand == "surv", t == 1, x == 0)
+  it5cov_c <- its$term_level |>
+    filter(method == "mi_iter5", estimand == "surv")
   ext3 <- sprintf(
-    "The iterated-MI extension (Fig 7) confirms diagnosis and cure on the same data: chained re-imputation with iter = 3 lifts sparse-cell S(t|x) coverage by up to %+.2f (paired), and iter = 5 removes the bias almost entirely (S(1|0) bias within %+.3f of zero in every rate-0.3 cell) -- the bias was initialisation, not missing information.",
-    max(sg_c$diff), max(abs(it5b_c$bias))
+    "The iterated-MI extension (Fig 7) confirms the diagnosis on the same data: chained re-imputation with iter = 3 lifts sparse-cell S(t|x) coverage by up to %+.2f (paired), and iter = 5 shrinks S(1|0) bias to within %+.3f of zero in every rate-0.3 cell, with coverage %.2f-%.2f -- for S(t|x), the bias was dominated by initialisation, not missing information (the hardest cells retain a small residual shortfall; the sparse peaked-cell *hazard* gap, by contrast, IS information loss and survives iteration, Fig 7).",
+    max(sg_c$diff), max(abs(it5b_c$bias)),
+    min(it5cov_c$coverage), max(it5cov_c$coverage)
   )
-  ext5 <- "For sparse panels, set iter = 3-5 in pamm_ic (roughly linear fit-cost in iter; Fig 7) instead of accepting optimistic early-time survival estimates."
+  ext5 <- "For sparse panels, set iter = 3-5 in pamm_ic for survival and effect estimands (roughly linear fit-cost in iter; Fig 7) instead of accepting optimistic early-time survival estimates -- but mind Fig 7's two caveats: sparse peaked-baseline hazards stay sub-oracle regardless of iter, and with flexible time-varying terms at small n, iteration occasionally produces divergent, very-wide-CI chains."
 } else {
   ext3 <- "This motivates the iterated (refit-and-reimpute) extension scoped in the README."
   ext5 <- "With sparser panels still, treat early-time S(t|x) point estimates as optimistic."

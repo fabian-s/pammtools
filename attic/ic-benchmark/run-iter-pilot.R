@@ -136,7 +136,7 @@ for (w in seq_along(waves)) {
           rep = reps$rep[i],
           seed_data = reps$seed_data[i],
           cell_id = cell$cell_id,
-          method = "mi_iter",
+          method = paste(methods_run, collapse = "+"),
           error_msg = paste("REP-LEVEL:", conditionMessage(e))
         )
       }
@@ -153,7 +153,7 @@ for (w in seq_along(waves)) {
       tibble(
         rep = reps$rep[ix[i]],
         cell_id = cell$cell_id,
-        method = "mi_iter",
+        method = paste(methods_run, collapse = "+"),
         error_msg = "FORK-LEVEL: mclapply try-error"
       )
     })
