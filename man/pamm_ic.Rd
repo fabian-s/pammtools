@@ -57,7 +57,13 @@ imputation and re-fitting on its own completed data set \code{k} times, so
 later imputations are drawn from a fit that no longer depends on the
 midpoint initialiser -- a sequential ("chained") MI scheme that
 progressively removes initialiser bias under sparse inspection, at roughly
-\code{iter}-fold fitting cost.}
+\code{iter}-fold fitting cost. Simulation evidence (see the package's
+interval-censoring benchmark): with inspection gaps that are small
+relative to the time scale, \code{iter = 1} is unbiased; with wide gaps
+(mean gap of order 1/3 of the follow-up), early-time survival estimates
+from \code{iter = 1} are biased upward and \code{iter = 3} removes most
+of that bias (\code{iter = 5} essentially all of it), with bias shrinking
+roughly geometrically in \code{iter}.}
 
 \item{proper}{Logical; if \code{TRUE} (default, "proper" MI) a coefficient
 vector is drawn from the posterior \eqn{N(\hat\beta, V_\beta)} of the

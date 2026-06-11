@@ -8,11 +8,14 @@
 # Writes results/iter-pilot/task_<k>.rds -- production results are untouched.
 #
 # Usage:  Rscript attic/ic-benchmark/run-iter-pilot.R <pilot_task> [n_cores]
-#         pilot_task indexes ITER_PILOT_CELLS (1-10)
+#         pilot_task indexes the chosen cell set
 # Env:    ITER_PILOT_REPS    (default 50)
 #         ITER_PILOT_METHODS (default "mi_iter"; comma-separated, e.g.
 #                             "mi_iter3,mi_iter5" for the iter-sensitivity run)
 #         ITER_PILOT_OUTDIR  (default "iter-pilot"; results/<outdir>/)
+#         ITER_PILOT_CELLSET ("pilot" = the 10 pilot cells [default];
+#                             "core24" = all 24 core cells;
+#                             "r03"    = the 8 rate-0.3 core cells)
 # ===========================================================================
 
 args <- commandArgs(trailingOnly = TRUE)
@@ -38,7 +41,7 @@ source(file.path(bench_dir, "metrics.R"))
 
 # the 8 sparsest core cells (one-step bias largest) + the two moderate-rate
 # large-n cells where S coverage already dipped (0.819/0.821)
-ITER_PILOT_CELLS <- c(
+PILOT10 <- c(
   "core-const-ph-random-r0.3-n300-m10",
   "core-const-ph-random-r0.3-n1000-m10",
   "core-peaked-ph-random-r0.3-n300-m10",
@@ -49,6 +52,13 @@ ITER_PILOT_CELLS <- c(
   "core-peaked-tv-random-r0.3-n1000-m10",
   "core-const-ph-random-r0.6-n1000-m10",
   "core-peaked-ph-random-r0.6-n1000-m10"
+)
+ITER_PILOT_CELLS <- switch(
+  Sys.getenv("ITER_PILOT_CELLSET", "pilot"),
+  pilot = PILOT10,
+  core24 = CELLS$cell_id[CELLS$arm == "core"],
+  r03 = CELLS$cell_id[CELLS$arm == "core" & CELLS$rate == 0.3],
+  stop("unknown ITER_PILOT_CELLSET")
 )
 stopifnot(all(ITER_PILOT_CELLS %in% CELLS$cell_id))
 stopifnot(pilot_task >= 1, pilot_task <= length(ITER_PILOT_CELLS))
