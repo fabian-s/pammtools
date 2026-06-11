@@ -89,8 +89,9 @@ code, pilot, results; see the decision log in `README.md`). The earlier
 | `turnbull` | `icenReg::ic_np` stratified by x (Turnbull NPMLE) | none (point accuracy only) | nonparametric accuracy benchmark for S(t\|x) in the simple cases |
 
 All simulation-based CIs use the same number of draws (nsim = 500, equalized
-so coverage differences are not tail-order-statistic artifacts; an LRZ
-sensitivity run over nsim ∈ {200, 500, 1000} showed identical coverage).
+so coverage differences are not tail-order-statistic artifacts; a 20-rep LRZ
+sensitivity run over nsim ∈ {200, 500, 1000} found coverage differences well
+below MC SE — decision log, 2026-06-10).
 Within each Turnbull equivalence class (where the NPMLE is flat or
 undefined), S is scored at the midpoint of the upper/lower envelope and the
 half-gap is recorded as `ambiguity`. Note one deliberate construction
@@ -125,9 +126,16 @@ additionally masks 30% of observed event causes to exercise
 Exp(rate) gaps, rate ∈ {1.5, 0.6, 0.3} — mean gap 1/rate ≈ 0.67 / 1.67 / 3.33,
 i.e. dense → sparse interval censoring. *fixed*: one shared deterministic
 schedule for all subjects (dense gap 2/3, sparse gap 10/3). *mixed*: the fixed
-schedule shifted per subject by U(0, gap). The event time is bracketed by the
-nearest inspections (L, R]; events after the last inspection or horizon are
-right-censored. **Caveat (fixed schedule):** with one shared grid, S(t) is
+schedule shifted per subject by U(0, gap). Every inspection grid additionally
+contains an **end-of-study examination at the horizon** (`terminal_exam = TRUE`
+in `add_inspections`), so the event time is always bracketed by the nearest
+inspections (L, R] with R ≤ 10, and only subjects event-free at the horizon are
+right-censored. (Mixing conventions — exact exit times for survivors but open
+intervals for undetected events — would make the right-censoring informative;
+exactly this defect was found at Gate R3 and fixed before the production run
+reported here, see the README decision log. The fraction of events bracketed
+only by the terminal exam is recorded as `prop_terminal_only`.)
+**Caveat (fixed schedule):** with one shared grid, S(t) is
 nonparametrically identified *only at the schedule points*; elsewhere all
 methods score model-based interpolation, and sparse-grid hazard estimands can
 be degenerate. These cells are robustness exhibits, never headlined alongside
@@ -227,11 +235,29 @@ if (nrow(fl) == 0) {
     nrow(fl), 100 * max(fl$fail_rate),
     fl$cell_id[which.max(fl$fail_rate)], fl$method[which.max(fl$fail_rate)]
   ))
-  knitr::kable(fl, digits = 3)
+  knitr::kable(fl |> select(-warn_rate, -first_warning), digits = 3)
 }
 if (nrow(res$missing) > 0) {
   cat(sprintf("\n**WARNING: %d missing (cell, rep) combinations.**\n",
               nrow(res$missing)))
+}
+wl <- res$failures |> filter(warn_rate > 0.10)
+if (nrow(wl) > 0) {
+  cat(sprintf(
+    "\nFailures are not the whole story: %d (cell, method) combinations had fitter warnings in >10%% of reps (these reps ARE included in all summaries):\n\n",
+    nrow(wl)
+  ))
+  print(knitr::kable(
+    wl |>
+      mutate(first_warning = substr(first_warning, 1, 60)) |>
+      select(cell_id, method, warn_rate, first_warning),
+    digits = 3
+  ))
+  cat(
+    "\nSystematic warnings are concentrated in the fixed-schedule robustness",
+    "cells, where the shared sparse inspection grid leaves hazards weakly",
+    "identified between schedule points (see Design: fixed-schedule caveat).\n"
+  )
 }
 ```
 
@@ -265,6 +291,58 @@ cat(sprintf(
   "MI survival coverage across core cells: %.3f-%.3f (median %.3f). Midpoint: %.3f-%.3f (median %.3f).\n",
   min(mi_s$coverage), max(mi_s$coverage), median(mi_s$coverage),
   min(md_s$coverage), max(md_s$coverage), median(md_s$coverage)
+))
+mi_d <- d1 |> filter(method == "mi", rate == 1.5)
+for (es in c("surv", "hazard")) {
+  dd <- mi_d |> filter(estimand == es)
+  worst <- dd |> slice_min(coverage, n = 1)
+  cat(sprintf(
+    "Under dense inspection (rate 1.5), MI %s coverage is %.3f-%.3f; the worst cell (%s: %.3f, MC SE %.3f) has bias-eliminated coverage %.3f, i.e. any shortfall is point-estimate bias, not SE failure.\n",
+    es, min(dd$coverage), max(dd$coverage),
+    worst$cell_id, worst$coverage, worst$coverage_mcse, worst$be_coverage
+  ))
+}
+```
+
+```{r fig1-sparse-prose, results = "asis"}
+# headline sparse-cell story (computed; required at Gate R3-final)
+pto <- mean(tl$prop_terminal_only[tl$arm == "core" & tl$rate == 0.3],
+            na.rm = TRUE)
+grad <- tl |>
+  filter(arm == "core", rate == 0.3, effect == "ph", estimand == "surv",
+         method == "mi") |>
+  arrange(baseline, n)
+gtxt <- paste(
+  sprintf("%s n=%d: %.3f (BE %.3f)",
+          grad$baseline, grad$n, grad$coverage, grad$be_coverage),
+  collapse = "; "
+)
+p1 <- pw |>
+  filter(cell_id == "core-const-ph-random-r0.3-n1000-m10",
+         estimand == "surv", t == 1, x == 0)
+mi1 <- p1 |> filter(method == "mi")
+tb1 <- p1 |> filter(method == "turnbull")
+md_sp <- tl |>
+  filter(arm == "core", rate == 0.3, estimand == "surv", method == "midpoint")
+cat(sprintf(
+  "**Sparse inspection (rate 0.3; %.1f%% of events bracketed only by the end-of-study exam).** MI under-covers S(t|x), and the shortfall grows with n at fixed bias (grid-averaged coverage, BE = bias-eliminated: %s) -- the signature of point-estimate bias with honest SEs. The bias is genuine one-step-MI bias concentrated at early-to-mid t: in const-ph/n1000, S(1|0) bias is %+.3f (coverage %.3f), while the Turnbull NPMLE on the *same data* recovers S(1|0) with bias %+.3f. The information is in the data; the single midpoint-initialized imputation model leaves it on the table. Midpoint imputation is far worse still (coverage %.3f-%.3f): events bracketed only by the terminal exam are imputed at (L+10)/2, beyond their conditional expectation under the true hazard, a structural bias that one-step MI attenuates but does not remove.\n",
+  100 * pto, gtxt, mi1$bias, mi1$coverage, tb1$bias,
+  min(md_sp$coverage), max(md_sp$coverage)
+))
+
+# estimand caveat: interval-average hazard at peaked baselines (oracle ceiling)
+hz <- tl |>
+  filter(arm == "core", baseline == "peaked", effect == "ph", n == 1000,
+         estimand == "hazard", method == "mi") |>
+  arrange(desc(rate))
+orc <- tl |>
+  filter(arm == "core", baseline == "peaked", estimand == "hazard",
+         method == "oracle")
+cat(sprintf(
+  "\n**Estimand caveat: interval-average hazard at peaked baselines.** MI hazard coverage in peaked-ph/n1000 is %s across rates 1.5/0.6/0.3 (BE %s) -- peak-attenuation point bias, not SE failure. The oracle itself attains only %.3f-%.3f on this estimand across peaked cells: a penalized-spline smoothing ceiling, not an interval-censoring phenomenon.\n",
+  paste(sprintf("%.3f", hz$coverage), collapse = "/"),
+  paste(sprintf("%.3f", hz$be_coverage), collapse = "/"),
+  min(orc$coverage), max(orc$coverage)
 ))
 ```
 
@@ -304,6 +382,40 @@ ggplot(
     title = "Paired MI - midpoint coverage differences (same data per rep)",
     subtitle = "pointranges: +-1 paired MC SE"
   )
+```
+
+```{r fig2b-prose, results = "asis"}
+pd <- paired |>
+  filter(arm == "core") |>
+  group_by(grp = ifelse(estimand %in% c("surv", "hazard"), "S/hazard", "beta/logHR")) |>
+  summarise(
+    lo = min(diff), hi = max(diff),
+    n_pos = sum(diff > 2 * diff_mcse),
+    n_neg = sum(diff < -2 * diff_mcse),
+    n = n(), .groups = "drop"
+  )
+for (i in seq_len(nrow(pd))) {
+  cat(sprintf(
+    "- Paired MI - midpoint coverage differences, %s: range %+.3f to %+.3f; MI significantly better (>2 paired MC SE) in %d/%d contrasts, significantly worse in %d.\n",
+    pd$grp[i], pd$lo[i], pd$hi[i], pd$n_pos[i], pd$n[i], pd$n_neg[i]
+  ))
+}
+sc <- pd[pd$grp == "beta/logHR", ]
+cat(sprintf(
+  "\nMI's coverage advantage over midpoint imputation is strongest for S(t|x)/hazard; for the scalar effect estimands (beta, logHR), MI is significantly better in %d and significantly worse in %d of %d contrasts.\n",
+  sc$n_pos, sc$n_neg, sc$n
+))
+bb <- tl |>
+  filter(method == "mi", estimand == "beta", arm == "core") |>
+  mutate(z = bias / bias_mcse) |>
+  filter(abs(z) > 2)
+if (nrow(bb)) {
+  cat(sprintf(
+    "\nMI beta bias is negligible except in %s.\n",
+    paste(sprintf("%s (%+.4f, z = %.1f; coverage %.3f)",
+                  bb$cell_id, bb$bias, bb$z, bb$coverage), collapse = "; ")
+  ))
+}
 ```
 
 ## Fig 3: point accuracy (RMSE, incl. Turnbull)
@@ -348,6 +460,16 @@ if (nrow(tb)) {
     max(pw$mean_ambiguity[pw$method == "turnbull"], na.rm = TRUE)
   ))
 }
+lr <- tl |>
+  filter(arm == "core", effect == "tv", n == 300, estimand == "logHR",
+         method %in% c("mi", "midpoint")) |>
+  select(cell_id, method, rmse) |>
+  pivot_wider(names_from = method, values_from = rmse) |>
+  mutate(rel = mi / midpoint)
+cat(sprintf(
+  "\nMI's coverage dominance does not extend to RMSE everywhere: for logHR(t) in the TV n=300 cells, MI RMSE is %.0f%%-%.0f%% of midpoint's (values >100%% = MI less accurate).\n",
+  100 * min(lr$rel), 100 * max(lr$rel)
+))
 ```
 
 ## Fig 4: CI width and avSE/empSE (the mechanism)

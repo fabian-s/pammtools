@@ -72,6 +72,10 @@ failures <- raw |>
     n_fail = n_distinct(rep[!is.na(error_msg)]),
     fail_rate = n_fail / n_rep,
     first_error = first(stats::na.omit(error_msg)),
+    # warnings are not failures but systematic ones flag pathologies the
+    # failure rate alone would hide (R3-final finding: fixed-sparse MI cell)
+    warn_rate = n_distinct(rep[!is.na(n_warnings) & n_warnings > 0]) / n_rep,
+    first_warning = first(stats::na.omit(first_warning)),
     .groups = "drop"
   )
 flagged <- filter(failures, fail_rate > 0.02)
