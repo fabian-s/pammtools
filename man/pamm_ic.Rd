@@ -97,6 +97,11 @@ with median-p values (\code{$p.table}, \code{$s.table}), parametric
 coefficient FMI diagnostics (\code{$fmi.table}) and smooth-term FMI
 five-number summaries over the training grid (\code{$smooth.fmi}).}
 \item{\code{init_fit}}{the (slimmed) initialiser/imputation model.}
+\item{\code{unstable_chains}}{indices of imputation chains flagged as
+numerically unstable (extreme coefficients or coefficient SEs on the
+log-hazard scale; also raised as a \code{warning}). Degenerate chains
+can arise -- silently, without \code{mgcv} warnings -- when iterating
+flexible time-varying models on small samples.}
 \item{others}{the parsed bounds \code{ic}, the shared \code{cut}, and
 metadata.}
 }

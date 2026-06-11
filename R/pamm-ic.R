@@ -71,6 +71,11 @@
 #'       coefficient FMI diagnostics (\code{$fmi.table}) and smooth-term FMI
 #'       five-number summaries over the training grid (\code{$smooth.fmi}).}
 #'     \item{\code{init_fit}}{the (slimmed) initialiser/imputation model.}
+#'     \item{\code{unstable_chains}}{indices of imputation chains flagged as
+#'       numerically unstable (extreme coefficients or coefficient SEs on the
+#'       log-hazard scale; also raised as a \code{warning}). Degenerate chains
+#'       can arise -- silently, without \code{mgcv} warnings -- when iterating
+#'       flexible time-varying models on small samples.}
 #'     \item{others}{the parsed bounds \code{ic}, the shared \code{cut}, and
 #'       metadata.}
 #'   }
@@ -166,6 +171,7 @@ pamm_ic <- function(
       proper = proper,
       id_var = id,
       n_obs = n_obs,
+      unstable_chains = warn_unstable_chains(fits),
       type = "single"
     ),
     class = c("pamm_ic", "list")
@@ -203,6 +209,7 @@ pamm_ic_cr <- function(
   cut = NULL,
   max_time = NULL,
   m = 10L,
+  iter = 1L,
   proper = TRUE,
   censor_code = 0L,
   id = "id",
@@ -210,6 +217,7 @@ pamm_ic_cr <- function(
   ...
 ) {
   assert_count(m, positive = TRUE)
+  assert_count(iter, positive = TRUE)
   assert_string(cause)
   assert_subset(cause, names(data))
 
@@ -272,31 +280,41 @@ pamm_ic_cr <- function(
   skeleton <- NULL
   n_obs <- NA_integer_
   for (mm in seq_len(m)) {
-    beta_mm <- if (proper) {
-      as.numeric(rmvnorm(1, mean = coef(fit0), sigma = fit0[["Vp"]]))
-    } else {
-      coef(fit0)
+    # chained MI (see pamm_ic): iter = 1 reproduces one-step MI draw-for-draw
+    fit_mm <- fit0
+    cache_mm <- cache
+    ped_m <- NULL
+    for (k in seq_len(iter)) {
+      beta_mm <- if (proper) {
+        as.numeric(rmvnorm(1, mean = coef(fit_mm), sigma = fit_mm[["Vp"]]))
+      } else {
+        coef(fit_mm)
+      }
+      imp <- impute_ic_cr(
+        fit_mm,
+        ic,
+        cut,
+        beta = beta_mm,
+        cache = cache_mm,
+        cause_known = cause_known
+      )
+      ped_m <- build_ic_ped_cr(
+        ic,
+        imp[["time"]],
+        imp[["cause"]],
+        is_cens,
+        cut,
+        formula,
+        id,
+        cause_levels,
+        censor_code,
+        cause_var = cause
+      )
+      if (k < iter) {
+        fit_mm <- pamm(model_formula, data = ped_m, engine = engine, ...)
+        cache_mm <- ic_pred_cache(fit_mm, ic, cut, cause_levels = cause_levels)
+      }
     }
-    imp <- impute_ic_cr(
-      fit0,
-      ic,
-      cut,
-      beta = beta_mm,
-      cache = cache,
-      cause_known = cause_known
-    )
-    ped_m <- build_ic_ped_cr(
-      ic,
-      imp[["time"]],
-      imp[["cause"]],
-      is_cens,
-      cut,
-      formula,
-      id,
-      cause_levels,
-      censor_code,
-      cause_var = cause
-    )
     fs <- fit_strip_summarise(model_formula, ped_m, engine, ...)
     fits[[mm]] <- fs[["fit"]]
     smry[[mm]] <- fs[["summary"]]
@@ -314,10 +332,12 @@ pamm_ic_cr <- function(
       formula = formula,
       model_formula = model_formula,
       m = m,
+      iter = iter,
       proper = proper,
       id_var = id,
       cause_levels = cause_levels,
       n_obs = n_obs,
+      unstable_chains = warn_unstable_chains(fits),
       type = "cr"
     ),
     class = c("pamm_ic", "list")
@@ -327,6 +347,41 @@ pamm_ic_cr <- function(
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+# Stability guard for imputation chains. Iterating the impute-refit cycle can
+# occasionally amplify a weakly identified chain (flexible time-varying terms,
+# small n) into a degenerate fit with extreme coefficients and vacuous CIs --
+# WITHOUT any mgcv warning (found in the package's IC benchmark, Gate-R3-ext).
+# Flag chains whose log-hazard-scale coefficients or coefficient SEs are
+# beyond any plausible magnitude. Returns the offending chain indices
+# (integer(0) if none) and warns once.
+warn_unstable_chains <- function(fits, coef_limit = 20, se_limit = 10) {
+  unstable <- which(vapply(
+    fits,
+    function(f) {
+      cf <- stats::coef(f)
+      vp <- f[["Vp"]]
+      max(abs(cf), na.rm = TRUE) > coef_limit ||
+        (!is.null(vp) && sqrt(max(diag(vp), na.rm = TRUE)) > se_limit)
+    },
+    logical(1)
+  ))
+  if (length(unstable)) {
+    warning(
+      "Imputation chain(s) ",
+      paste(unstable, collapse = ", "),
+      " look numerically unstable (|coefficient| > ",
+      coef_limit,
+      " or coefficient SE > ",
+      se_limit,
+      " on the log-hazard scale). Pooled estimates may be dominated by ",
+      "degenerate chains with vacuous intervals; inspect the affected fits ",
+      "and consider a less flexible model_formula or fewer `iter`ations.",
+      call. = FALSE
+    )
+  }
+  unstable
+}
 
 # Construct a default model formula `ped_status ~ s(tend) [+ by-cause] + covars`.
 default_pamm_formula <- function(

@@ -366,10 +366,53 @@ to exact event times, which interval censoring leaves uncertain (cf.\ the
 large fraction of missing information reported by `summary()` above).  
 The same machinery is available for `add_cumu_hazard()`.
 
+## Sparse inspection schedules: iterated MI
+
+By default all `m` imputations are drawn from the single midpoint-initialised
+fit ("one-step" MI). When the inspection intervals are *narrow* relative to
+the time scale this is unbiased, but with *wide* gaps (mean gap of the order
+of a third of the follow-up) the initialiser's midpoint bias leaks into the
+imputations: early-time survival is over-estimated, and -- because the pooled
+standard errors remain honest -- coverage *deteriorates as $n$ grows*.
+
+The remedy is `iter`: with `iter = k`, each imputation chain alternates
+imputation and re-fitting on its own completed data $k$ times, so later
+imputations come from fits whose dependence on the initialiser is
+progressively attenuated (a chained-MI scheme in the spirit of
+poor-man's data augmentation / `mice`'s `maxit`).
+
+```{r, eval = FALSE}
+fit_sparse <- pamm_ic(
+  Surv(L, R, type = "interval2") ~ trt,
+  data          = icd,
+  model_formula = ped_status ~ trt + s(tend, by = trt),
+  cut           = seq(0, 10, by = 0.5),
+  m             = 20,
+  iter          = 3   # recommended for sparse panels
+)
+```
+
+**Recommendation** (from the package's Monte Carlo benchmark, 500 replications
+per cell): keep the default `iter = 1` for densely inspected data; use
+`iter = 3` for sparse panels -- it removes most of the early-time survival bias
+(`iter = 5` essentially all of it, with bias shrinking roughly geometrically)
+at a fit cost roughly linear in `iter`. Two caveats from the same benchmark:
+
+* the *hazard* near sharp peaks remains attenuated under sparse inspection no
+  matter how many iterations are used -- with wide intervals that peak
+  information is genuinely lost, not just imputed badly; and
+* with flexible time-varying-effect terms and small samples, iterating can
+  occasionally amplify a weakly identified chain into a degenerate fit with
+  vacuous intervals. `pamm_ic()` flags such chains with a warning (and in
+  `$unstable_chains`); if it fires, inspect the affected fits and consider a
+  less flexible `model_formula` or fewer iterations.
+
 ## Competing risks
 
 With $K$ competing causes, `pamm_ic_cr()` imputes the event time from a fitted
-**cause-specific** PAMM while retaining observed event causes. This is the usual
+**cause-specific** PAMM while retaining observed event causes. (It accepts the
+same `iter` argument as `pamm_ic()`, with the same sparse-panel
+recommendation.) This is the usual
 competing-risks interval-censoring setup: the cause is known at detection, but
 the event time is only known to lie in $(L, R]$. If an event cause is explicitly
 missing (`NA`), `pamm_ic_cr()` can also sample the cause from the fitted

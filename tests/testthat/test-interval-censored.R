@@ -482,6 +482,47 @@ test_that("pamm_ic iter > 1 performs chained re-imputation", {
   expect_true(all(s2$surv_prob <= s2$surv_upper + 1e-8))
 })
 
+test_that("pamm_ic_cr supports iter and records it", {
+  set.seed(31)
+  n <- 150
+  df <- data.frame(id = seq_len(n), x = runif(n, -1, 1))
+  t1 <- rexp(n, 0.15)
+  t2 <- rexp(n, 0.10)
+  obs <- pmin(t1, t2, 10)
+  df$time <- obs
+  df$status <- as.integer(obs < 10)
+  df$cause <- ifelse(obs >= 10, 0L, ifelse(t1 < t2, 1L, 2L))
+  icd <- add_inspections(df, rate = 0.8, max_time = 10)
+  set.seed(2)
+  f2 <- pamm_ic_cr(
+    Surv(L, R, type = "interval2") ~ x,
+    icd,
+    cause = "cause",
+    cut = seq(0, 10, by = 1),
+    m = 2,
+    iter = 2
+  )
+  expect_s3_class(f2, "pamm_ic")
+  expect_equal(f2$type, "cr")
+  expect_equal(f2$iter, 2)
+  expect_length(f2$fits, 2)
+  expect_identical(f2$unstable_chains, integer(0))
+})
+
+test_that("warn_unstable_chains flags degenerate imputation fits", {
+  ok_fit <- list(coefficients = c(a = -1.5, b = 0.4), Vp = diag(c(0.04, 0.01)))
+  bad_coef <- list(coefficients = c(a = 46, b = 0.4), Vp = diag(c(0.04, 0.01)))
+  bad_se <- list(coefficients = c(a = -1.5, b = 0.4), Vp = diag(c(1e30, 0.01)))
+  expect_silent(
+    expect_identical(warn_unstable_chains(list(ok_fit, ok_fit)), integer(0))
+  )
+  expect_warning(
+    out <- warn_unstable_chains(list(ok_fit, bad_coef, bad_se)),
+    "unstable"
+  )
+  expect_identical(out, c(2L, 3L))
+})
+
 test_that("add_inspections right-censoring is non-informative", {
   set.seed(11)
   df <- data.frame(x = runif(400, -1, 1))
