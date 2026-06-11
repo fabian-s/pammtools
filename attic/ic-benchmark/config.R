@@ -216,7 +216,9 @@ METHOD_INDEX <- c(
   ic_par = 4L,
   ic_sp = 5L,
   turnbull = 6L,
-  mi_iter = 7L # iterated-MI extension (pilot); new index, others untouched
+  mi_iter = 7L, # iterated-MI extension (pilot); new index, others untouched
+  mi_iter3 = 8L, # iter-sensitivity legs
+  mi_iter5 = 9L
 )
 
 get_applicable_methods <- function(cell) {

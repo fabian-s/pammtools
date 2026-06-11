@@ -9,7 +9,10 @@
 #
 # Usage:  Rscript attic/ic-benchmark/run-iter-pilot.R <pilot_task> [n_cores]
 #         pilot_task indexes ITER_PILOT_CELLS (1-10)
-# Env:    ITER_PILOT_REPS (default 50)
+# Env:    ITER_PILOT_REPS    (default 50)
+#         ITER_PILOT_METHODS (default "mi_iter"; comma-separated, e.g.
+#                             "mi_iter3,mi_iter5" for the iter-sensitivity run)
+#         ITER_PILOT_OUTDIR  (default "iter-pilot"; results/<outdir>/)
 # ===========================================================================
 
 args <- commandArgs(trailingOnly = TRUE)
@@ -54,6 +57,12 @@ n_pilot_reps <- {
   v <- Sys.getenv("ITER_PILOT_REPS")
   if (nzchar(v)) as.integer(v) else 50L
 }
+methods_run <- strsplit(
+  Sys.getenv("ITER_PILOT_METHODS", "mi_iter"),
+  ","
+)[[1]]
+stopifnot(all(methods_run %in% names(METHOD_INDEX)))
+out_sub <- Sys.getenv("ITER_PILOT_OUTDIR", "iter-pilot")
 
 cell <- CELLS[CELLS$cell_id == ITER_PILOT_CELLS[pilot_task], ]
 stopifnot(nrow(cell) == 1)
@@ -61,14 +70,15 @@ stopifnot(nrow(cell) == 1)
 reps <- TASK_TABLE |>
   filter(task_id == cell$task_id, rep <= n_pilot_reps)
 
-out_dir <- file.path(RES_DIR, "iter-pilot")
+out_dir <- file.path(RES_DIR, out_sub)
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 out_file <- file.path(out_dir, sprintf("task_%02d.rds", pilot_task))
 
 cat(sprintf(
-  "[iter-pilot %d] cell=%s n_rep=%d cores=%d\n",
+  "[iter-pilot %d] cell=%s methods=%s n_rep=%d cores=%d\n",
   pilot_task,
   cell$cell_id,
+  paste(methods_run, collapse = "+"),
   nrow(reps),
   n_cores
 ))
@@ -76,8 +86,10 @@ cat(sprintf(
 run_rep <- function(rep_id, seed_data) {
   dat <- generate_data(cell, seed_data)
   sub <- method_subseeds(seed_data)
-  run_method("mi_iter", dat, cell, sub[METHOD_INDEX["mi_iter"]]) |>
-    score_rep(cell) |>
+  bind_rows(lapply(methods_run, function(meth) {
+    run_method(meth, dat, cell, sub[METHOD_INDEX[meth]]) |>
+      score_rep(cell)
+  })) |>
     mutate(
       task_id = cell$task_id,
       cell_id = cell$cell_id,

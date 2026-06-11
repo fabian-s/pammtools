@@ -617,6 +617,13 @@ fit_turnbull <- function(dat, cell) {
 fit_mi_iter <- function(dat, cell) {
   fit_mi(dat, cell, iter = 2L)
 }
+# iter-sensitivity legs (converge-vs-bias-floor question)
+fit_mi_iter3 <- function(dat, cell) {
+  fit_mi(dat, cell, iter = 3L)
+}
+fit_mi_iter5 <- function(dat, cell) {
+  fit_mi(dat, cell, iter = 5L)
+}
 
 # ---- dispatcher --------------------------------------------------------------------
 FIT_FUNS <- list(
@@ -626,7 +633,9 @@ FIT_FUNS <- list(
   ic_par = fit_ic_par,
   ic_sp = fit_ic_sp,
   turnbull = fit_turnbull,
-  mi_iter = fit_mi_iter
+  mi_iter = fit_mi_iter,
+  mi_iter3 = fit_mi_iter3,
+  mi_iter5 = fit_mi_iter5
 )
 
 # misspecified-by-design flags (per method x cell x estimand)
