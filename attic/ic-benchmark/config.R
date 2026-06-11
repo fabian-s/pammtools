@@ -215,7 +215,8 @@ METHOD_INDEX <- c(
   oracle = 3L,
   ic_par = 4L,
   ic_sp = 5L,
-  turnbull = 6L
+  turnbull = 6L,
+  mi_iter = 7L # iterated-MI extension (pilot); new index, others untouched
 )
 
 get_applicable_methods <- function(cell) {

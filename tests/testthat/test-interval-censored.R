@@ -452,6 +452,36 @@ test_that("add_inspections brackets the true event time", {
   expect_true(all(icf$L %in% c(0, seq(1, 10, by = 1))))
 })
 
+test_that("pamm_ic iter > 1 performs chained re-imputation", {
+  set.seed(21)
+  df <- data.frame(x = runif(120, -1, 1))
+  sdf <- sim_pexp(~ -2 + 0.4 * x, df, cut = seq(0, 10, by = 0.5))
+  icd <- add_inspections(sdf, rate = 0.5, max_time = 10)
+  ic_form <- Surv(L, R, type = "interval2") ~ x
+
+  # default (iter = 1) is unchanged draw-for-draw by the refactor
+  set.seed(1)
+  f1 <- pamm_ic(ic_form, icd, m = 2, cut = seq(0, 10, by = 0.5))
+  set.seed(1)
+  f1b <- pamm_ic(ic_form, icd, m = 2, iter = 1, cut = seq(0, 10, by = 0.5))
+  expect_equal(coef(f1$fits[[1]]), coef(f1b$fits[[1]]))
+  expect_equal(f1$iter, 1)
+
+  # iter = 2 runs, records iter, and yields different chain fits
+  set.seed(1)
+  f2 <- pamm_ic(ic_form, icd, m = 2, iter = 2, cut = seq(0, 10, by = 0.5))
+  expect_s3_class(f2, "pamm_ic")
+  expect_length(f2$fits, 2)
+  expect_equal(f2$iter, 2)
+  expect_false(isTRUE(all.equal(coef(f1$fits[[1]]), coef(f2$fits[[1]]))))
+  # pooled machinery still works downstream
+  ped <- as_ped(icd, ic_form, cut = seq(0, 10, by = 0.5))
+  nd <- make_newdata(ped, tend = c(5, 10))
+  s2 <- add_surv_prob(nd, f2, nsim = 50)
+  expect_true(all(s2$surv_lower <= s2$surv_prob + 1e-8))
+  expect_true(all(s2$surv_prob <= s2$surv_upper + 1e-8))
+})
+
 test_that("add_inspections right-censoring is non-informative", {
   set.seed(11)
   df <- data.frame(x = runif(400, -1, 1))

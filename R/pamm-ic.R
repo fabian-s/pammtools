@@ -29,9 +29,17 @@
 #'   imputations. If \code{NULL}, the finite interval endpoints are used.
 #' @param max_time Optional cap on the cut-points.
 #' @param m Number of imputations (default 10).
+#' @param iter Number of impute-refit iterations per imputation chain (default
+#'   \code{1} = classic one-step MI: all \code{m} imputations are drawn from the
+#'   single initialiser fit). For \code{iter = k > 1}, each chain alternates
+#'   imputation and re-fitting on its own completed data set \code{k} times, so
+#'   later imputations are drawn from a fit that no longer depends on the
+#'   midpoint initialiser -- a sequential ("chained") MI scheme that
+#'   progressively removes initialiser bias under sparse inspection, at roughly
+#'   \code{iter}-fold fitting cost.
 #' @param proper Logical; if \code{TRUE} (default, "proper" MI) a coefficient
 #'   vector is drawn from the posterior \eqn{N(\hat\beta, V_\beta)} of the
-#'   initialiser fit before each imputation, propagating parameter uncertainty.
+#'   fit the imputation is drawn from, propagating parameter uncertainty.
 #'   \code{FALSE} uses the point estimate and is intended for diagnostics only.
 #' @param init Initialiser for the first fit: \code{"midpoint"} (default) or
 #'   \code{"uniform"} imputation within each interval.
@@ -69,6 +77,7 @@ pamm_ic <- function(
   cut = NULL,
   max_time = NULL,
   m = 10L,
+  iter = 1L,
   proper = TRUE,
   init = c("midpoint", "uniform"),
   id = "id",
@@ -77,6 +86,7 @@ pamm_ic <- function(
 ) {
   init <- match.arg(init)
   assert_count(m, positive = TRUE)
+  assert_count(iter, positive = TRUE)
 
   ped0 <- as_ped_ic(data, formula, cut = cut, max_time = max_time, id = id)
   ic <- attr(ped0, "ic")
@@ -99,13 +109,31 @@ pamm_ic <- function(
   skeleton <- NULL
   n_obs <- NA_integer_
   for (mm in seq_len(m)) {
-    beta_mm <- if (proper) {
-      as.numeric(rmvnorm(1, mean = coef(fit0), sigma = fit0[["Vp"]]))
-    } else {
-      coef(fit0)
+    # chained MI: iteration k > 1 re-imputes from this chain's own re-fit, so
+    # the final imputation no longer depends on the midpoint initialiser.
+    # iter = 1 reproduces classic one-step MI draw-for-draw.
+    fit_mm <- fit0
+    cache_mm <- cache
+    ped_m <- NULL
+    for (k in seq_len(iter)) {
+      beta_mm <- if (proper) {
+        as.numeric(rmvnorm(1, mean = coef(fit_mm), sigma = fit_mm[["Vp"]]))
+      } else {
+        coef(fit_mm)
+      }
+      t_imp <- impute_ic_times(
+        fit_mm,
+        ic,
+        cut,
+        beta = beta_mm,
+        cache = cache_mm
+      )
+      ped_m <- build_ic_ped(ic, t_imp, cut, formula, id)
+      if (k < iter) {
+        fit_mm <- pamm(model_formula, data = ped_m, engine = engine, ...)
+        cache_mm <- ic_pred_cache(fit_mm, ic, cut)
+      }
     }
-    t_imp <- impute_ic_times(fit0, ic, cut, beta = beta_mm, cache = cache)
-    ped_m <- build_ic_ped(ic, t_imp, cut, formula, id)
     fs <- fit_strip_summarise(model_formula, ped_m, engine, ...)
     fits[[mm]] <- fs[["fit"]]
     smry[[mm]] <- fs[["summary"]]
@@ -123,6 +151,7 @@ pamm_ic <- function(
       formula = formula,
       model_formula = model_formula,
       m = m,
+      iter = iter,
       proper = proper,
       id_var = id,
       n_obs = n_obs,

@@ -333,9 +333,12 @@ extract_gam_single <- function(fit, cell) {
   out
 }
 
-fit_mi <- function(dat, cell) {
+fit_mi <- function(dat, cell, iter = 1L) {
   m <- if (!is.na(M_RUN)) M_RUN else cell$m
   if (cell$model_type == "cr") {
+    if (iter > 1L) {
+      stop("iterated MI is not implemented for competing risks")
+    }
     fit <- pammtools::pamm_ic_cr(
       ic_formula_for(cell),
       dat$icd,
@@ -355,7 +358,8 @@ fit_mi <- function(dat, cell) {
     dat$icd,
     model_formula = model_formula_for(cell$model_type),
     cut = CUT,
-    m = m
+    m = m,
+    iter = iter
   )
   binary <- cell$model_type %in% c("ph", "tv")
   grid <- make_grid(cell)
@@ -608,6 +612,12 @@ fit_turnbull <- function(dat, cell) {
   bind_rows(res)
 }
 
+# iterated MI (chained refit-and-reimpute, iter = 2): the extension motivated
+# by the one-step early-t bias finding; run by run-iter-pilot.R only
+fit_mi_iter <- function(dat, cell) {
+  fit_mi(dat, cell, iter = 2L)
+}
+
 # ---- dispatcher --------------------------------------------------------------------
 FIT_FUNS <- list(
   mi = fit_mi,
@@ -615,7 +625,8 @@ FIT_FUNS <- list(
   oracle = fit_oracle,
   ic_par = fit_ic_par,
   ic_sp = fit_ic_sp,
-  turnbull = fit_turnbull
+  turnbull = fit_turnbull,
+  mi_iter = fit_mi_iter
 )
 
 # misspecified-by-design flags (per method x cell x estimand)

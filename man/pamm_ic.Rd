@@ -20,6 +20,7 @@ pamm_ic(
   cut = NULL,
   max_time = NULL,
   m = 10L,
+  iter = 1L,
   proper = TRUE,
   init = c("midpoint", "uniform"),
   id = "id",
@@ -49,9 +50,18 @@ imputations. If \code{NULL}, the finite interval endpoints are used.}
 
 \item{m}{Number of imputations (default 10).}
 
+\item{iter}{Number of impute-refit iterations per imputation chain (default
+\code{1} = classic one-step MI: all \code{m} imputations are drawn from the
+single initialiser fit). For \code{iter = k > 1}, each chain alternates
+imputation and re-fitting on its own completed data set \code{k} times, so
+later imputations are drawn from a fit that no longer depends on the
+midpoint initialiser -- a sequential ("chained") MI scheme that
+progressively removes initialiser bias under sparse inspection, at roughly
+\code{iter}-fold fitting cost.}
+
 \item{proper}{Logical; if \code{TRUE} (default, "proper" MI) a coefficient
 vector is drawn from the posterior \eqn{N(\hat\beta, V_\beta)} of the
-initialiser fit before each imputation, propagating parameter uncertainty.
+fit the imputation is drawn from, propagating parameter uncertainty.
 \code{FALSE} uses the point estimate and is intended for diagnostics only.}
 
 \item{init}{Initialiser for the first fit: \code{"midpoint"} (default) or

@@ -43,7 +43,7 @@ imputations. If \code{NULL}, the finite interval endpoints are used.}
 
 \item{proper}{Logical; if \code{TRUE} (default, "proper" MI) a coefficient
 vector is drawn from the posterior \eqn{N(\hat\beta, V_\beta)} of the
-initialiser fit before each imputation, propagating parameter uncertainty.
+fit the imputation is drawn from, propagating parameter uncertainty.
 \code{FALSE} uses the point estimate and is intended for diagnostics only.}
 
 \item{censor_code}{Value of \code{cause} that encodes censoring (default 0).}
