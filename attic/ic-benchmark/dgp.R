@@ -213,7 +213,10 @@ generate_data <- function(cell, seed_data) {
   meta <- tibble(
     mean_int = mean(pmin(icd$R, HORIZON)[fin] - icd$L[fin]),
     prop_right_cens = mean(is.infinite(icd$R)),
-    prop_left_cens = mean(icd$L == 0 & is.finite(icd$R))
+    prop_left_cens = mean(icd$L == 0 & is.finite(icd$R)),
+    # events bracketed only by the end-of-study exam (would have been the
+    # informatively right-censored records pre-fix; Gate-R3 diagnostic)
+    prop_terminal_only = mean(is.finite(icd$R) & icd$R >= HORIZON)
   )
   list(icd = icd, exact = sdf, meta = meta)
 }

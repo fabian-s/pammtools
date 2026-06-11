@@ -12,6 +12,7 @@ add_inspections(
   rate = 1,
   schedule = NULL,
   max_time = NULL,
+  terminal_exam = TRUE,
   keep_truth = TRUE,
   L = "L",
   R = "R"
@@ -36,8 +37,19 @@ fixed grid by a random offset per subject.}
 \item{schedule}{Numeric vector of inspection times for
 \code{mechanism = "fixed"}/\code{"mixed"}.}
 
-\item{max_time}{Inspection horizon; events after the last inspection become
-right-censored (\code{R = Inf}). Defaults to \code{max(data[[time_var]])}.}
+\item{max_time}{Inspection horizon. Defaults to \code{max(data[[time_var]])}.}
+
+\item{terminal_exam}{Logical; if \code{TRUE} (default), every subject is
+additionally examined at \code{max_time} (an end-of-study examination), so
+events before \code{max_time} always have a finite upper bound and only
+subjects event-free at \code{max_time} are right-censored. If \code{FALSE},
+there is no closing examination: events after a subject's last inspection
+are right-censored at that inspection, and \emph{subjects that exit
+event-free} (\code{status == 0}) are likewise right-censored at their last
+inspection before exit (not at their exact exit time). Both conventions
+yield coarsening-at-random data; mixing them (exact exit times for
+survivors but open intervals for undetected events) would make the
+right-censoring informative and bias every interval-censoring likelihood.}
 
 \item{keep_truth}{Logical; keep the exact event time in \code{true_time}.}
 

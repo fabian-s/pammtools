@@ -188,12 +188,25 @@ term_level <- ok |>
 # per-cell censoring diagnostics: one value per rep (not per result row, which
 # would weight reps by method row counts)
 cens <- ok |>
-  distinct(cell_id, rep, mean_int, prop_right_cens, prop_left_cens) |>
+  distinct(pick(any_of(c(
+    "cell_id",
+    "rep",
+    "mean_int",
+    "prop_right_cens",
+    "prop_left_cens",
+    "prop_terminal_only" # absent in pre-fix raw files
+  )))) |>
   group_by(cell_id) |>
   summarise(
-    mean_int = mean(mean_int, na.rm = TRUE),
-    prop_right_cens = mean(prop_right_cens, na.rm = TRUE),
-    prop_left_cens = mean(prop_left_cens, na.rm = TRUE),
+    across(
+      any_of(c(
+        "mean_int",
+        "prop_right_cens",
+        "prop_left_cens",
+        "prop_terminal_only"
+      )),
+      \(v) mean(v, na.rm = TRUE)
+    ),
     .groups = "drop"
   )
 term_level <- left_join(term_level, cens, by = "cell_id")

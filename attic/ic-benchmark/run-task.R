@@ -133,7 +133,8 @@ for (w in seq_along(waves)) {
           seed_data = reps$seed_data[i],
           mean_int = NA_real_,
           prop_right_cens = NA_real_,
-          prop_left_cens = NA_real_
+          prop_left_cens = NA_real_,
+          prop_terminal_only = NA_real_
         )
       }
     )

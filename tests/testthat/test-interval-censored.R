@@ -451,3 +451,34 @@ test_that("add_inspections brackets the true event time", {
   )
   expect_true(all(icf$L %in% c(0, seq(1, 10, by = 1))))
 })
+
+test_that("add_inspections right-censoring is non-informative", {
+  set.seed(11)
+  df <- data.frame(x = runif(400, -1, 1))
+  # high baseline + horizon 4 < max event time: plenty of survivors (status 0)
+  sdf <- sim_pexp(~ -1 + 0.3 * x, df, cut = seq(0, 4, by = 0.25))
+  expect_gt(sum(sdf$status == 0), 0)
+
+  # terminal_exam = TRUE (default): every event before the horizon has a
+  # finite upper bound, so right-censored records never hide events in
+  # (L, max_time] -- the regression guard for the informative-censoring bug
+  icd <- add_inspections(sdf, rate = 0.3, max_time = 4)
+  ev <- icd$status == 1
+  expect_true(all(is.finite(icd$R[ev & icd$true_time <= 4])))
+  expect_false(any(is.infinite(icd$R) & icd$L < 4))
+  expect_true(all(icd$L[icd$status == 0] == icd$true_time[icd$status == 0]))
+
+  # terminal_exam = FALSE: survivors are censored at their LAST INSPECTION,
+  # never at their exact exit time (the other coherent convention)
+  icn <- add_inspections(sdf, rate = 0.3, max_time = 4, terminal_exam = FALSE)
+  sv <- icn$status == 0
+  expect_true(all(is.infinite(icn$R[sv])))
+  expect_true(all(icn$L[sv] <= icn$true_time[sv]))
+  # with Exp(0.3) gaps, last inspections a.s. differ from the exit time
+  expect_true(all(icn$L[sv] < icn$true_time[sv]))
+
+  # NA status is rejected, not silently treated as an event
+  sdf_na <- sdf
+  sdf_na$status[1] <- NA
+  expect_error(add_inspections(sdf_na, rate = 1), "missing")
+})

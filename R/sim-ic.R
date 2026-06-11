@@ -20,8 +20,18 @@
 #'   (expected gap \eqn{1/\mathrm{rate}}).
 #' @param schedule Numeric vector of inspection times for
 #'   \code{mechanism = "fixed"}/\code{"mixed"}.
-#' @param max_time Inspection horizon; events after the last inspection become
-#'   right-censored (\code{R = Inf}). Defaults to \code{max(data[[time_var]])}.
+#' @param max_time Inspection horizon. Defaults to \code{max(data[[time_var]])}.
+#' @param terminal_exam Logical; if \code{TRUE} (default), every subject is
+#'   additionally examined at \code{max_time} (an end-of-study examination), so
+#'   events before \code{max_time} always have a finite upper bound and only
+#'   subjects event-free at \code{max_time} are right-censored. If \code{FALSE},
+#'   there is no closing examination: events after a subject's last inspection
+#'   are right-censored at that inspection, and \emph{subjects that exit
+#'   event-free} (\code{status == 0}) are likewise right-censored at their last
+#'   inspection before exit (not at their exact exit time). Both conventions
+#'   yield coarsening-at-random data; mixing them (exact exit times for
+#'   survivors but open intervals for undetected events) would make the
+#'   right-censoring informative and bias every interval-censoring likelihood.
 #' @param keep_truth Logical; keep the exact event time in \code{true_time}.
 #' @param L,R Names of the created lower/upper bound columns.
 #' @return \code{data} augmented with interval bounds in columns \code{L} and
@@ -40,22 +50,27 @@
 #' @export
 add_inspections <- function(
   data,
-  time_var   = "time",
+  time_var = "time",
   status_var = "status",
-  mechanism  = c("random", "fixed", "mixed"),
-  rate       = 1,
-  schedule   = NULL,
-  max_time   = NULL,
+  mechanism = c("random", "fixed", "mixed"),
+  rate = 1,
+  schedule = NULL,
+  max_time = NULL,
+  terminal_exam = TRUE,
   keep_truth = TRUE,
   L = "L",
-  R = "R") {
-
+  R = "R"
+) {
   mechanism <- match.arg(mechanism)
   assert_data_frame(data, min.rows = 1)
   assert_choice(time_var, names(data))
+  assert_flag(terminal_exam)
 
-  tt  <- data[[time_var]]
-  st  <- if (status_var %in% names(data)) data[[status_var]] else rep(1L, nrow(data))
+  tt <- data[[time_var]]
+  st <- if (status_var %in% names(data)) data[[status_var]] else
+    rep(1L, nrow(data))
+  # NA status would silently be treated as an event below
+  assert_integerish(st, any.missing = FALSE)
   hor <- if (is.null(max_time)) max(tt) else max_time
 
   if (mechanism != "random") {
@@ -63,8 +78,9 @@ add_inspections <- function(
   }
 
   gen_grid <- function() {
-    if (mechanism == "random") {
-      g <- numeric(0); cur <- 0
+    g <- if (mechanism == "random") {
+      g <- numeric(0)
+      cur <- 0
       repeat {
         cur <- cur + rexp(1, rate)
         if (cur > hor) break
@@ -78,19 +94,33 @@ add_inspections <- function(
       s <- (schedule + off)
       s[s <= hor]
     }
+    # the closing examination is deterministic, so adding it never changes
+    # the RNG stream relative to terminal_exam = FALSE
+    if (terminal_exam) g <- c(g, hor)
+    sort(unique(g))
   }
 
   Lv <- numeric(nrow(data))
   Rv <- numeric(nrow(data))
   for (i in seq_len(nrow(data))) {
     if (isTRUE(st[i] == 0)) {
-      # already right-censored at tt[i]: event known only to be > tt[i]
-      Lv[i] <- tt[i]
-      Rv[i] <- Inf
+      if (terminal_exam) {
+        # subject exits event-free at tt[i]: event known only to be > tt[i]
+        Lv[i] <- tt[i]
+        Rv[i] <- Inf
+      } else {
+        # no closing exam: last seen event-free at the final inspection
+        # before exit (using the exact exit time here while undetected
+        # events keep open intervals would be informative censoring)
+        grid <- gen_grid()
+        below <- grid[grid <= tt[i]]
+        Lv[i] <- if (length(below)) max(below) else 0
+        Rv[i] <- Inf
+      }
       next
     }
-    grid <- sort(unique(gen_grid()))
-    below <- grid[grid <  tt[i]]
+    grid <- gen_grid()
+    below <- grid[grid < tt[i]]
     above <- grid[grid >= tt[i]]
     Lv[i] <- if (length(below)) max(below) else 0
     Rv[i] <- if (length(above)) min(above) else Inf
@@ -104,5 +134,4 @@ add_inspections <- function(
   }
 
   out
-
 }

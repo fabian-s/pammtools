@@ -46,6 +46,175 @@ cell). Monte Carlo SEs for grid-averaged coverage are clustered at the
 replication level. Cells where a method is misspecified by design are flagged
 with open symbols.
 
+# Design
+
+## Aims
+
+This benchmark validates and compares the interval-censored (IC) survival
+workflow added to `pammtools`: `pamm_ic()` / `pamm_ic_cr()` fit piecewise
+exponential additive mixed models (PAMMs) to interval-censored data by
+multiple imputation — exact event times are drawn from a conditional
+piecewise-exponential hazard initialized from a midpoint-imputed fit
+(one-step MI), a PAMM is fit per imputation, and inference is pooled via
+Rubin's rules. The study follows the ADEMP framework (Morris, White &
+Crowther 2019, *Stat Med*); the full reviewed design is in `PLAN.md` and the
+ADEMP document with its decision log in `README.md` (both in this folder).
+
+- **A1 (validation):** does `pamm_ic` MI inference attain nominal 95%
+  coverage and low bias for hazard, survival, covariate effects, time-varying
+  effects and competing-risks CIFs, across inspection sparsity, inspection
+  mechanisms and baseline-hazard shapes?
+- **A2 (comparison):** how does it compare against established external IC
+  methods — `icenReg::ic_par` (parametric Weibull PH), `icenReg::ic_sp`
+  (semiparametric PH) and the Turnbull NPMLE (`icenReg::ic_np`) — including
+  cells where the parametric comparator is **misspecified by design**? The
+  headline misspecification exhibit is `ic_par`'s S(t|x) behavior under the
+  non-Weibull "peaked" baseline; PH-only comparators in time-varying-effect
+  cells are reported as *estimand mismatch* (they target a least-false
+  constant logHR), never as headline "coverage failure".
+
+The design was frozen pre-production at Gate R2 (three external review gates:
+code, pilot, results; see the decision log in `README.md`). The earlier
+200-rep prototype is `attic/ic-simulation-study.R`.
+
+## Methods compared
+
+| Method | Fit | Confidence intervals | Role |
+|---|---|---|---|
+| `oracle` | PAMM on the **exact** (uncensored) event times, analysis grid CUT | simulation CIs, 500 posterior draws | upper reference bound: best achievable on this grid; isolates the cost of interval censoring |
+| `mi` | `pamm_ic` / `pamm_ic_cr`: m = 10 imputations (5/20 in spoke I), PAMM per imputation, Rubin-pooled | pooled posterior draws (500 total); scalar β via Rubin's rules with Barnard–Rubin small-sample df | the method under test |
+| `midpoint` | single PAMM on midpoint-imputed times ((L + min(R, horizon))/2; right-censored at L if R = ∞) | simulation CIs, 500 draws | naive single-imputation comparator: ignores imputation uncertainty |
+| `ic_par` | `icenReg::ic_par`, Weibull PH | Wald z for β; S/hazard via 500 normal coefficient draws pushed through the closed-form Weibull | external parametric comparator; **misspecified by design** under the peaked baseline and in TV cells |
+| `ic_sp` | `icenReg::ic_sp`, semiparametric PH (NPMLE baseline) | β: bootstrap percentile (500 resamples) in 4 designated cells, point-only elsewhere; S(t\|x) point-only (the bootstrap covers coefficients, not the NPMLE baseline) | external semiparametric comparator |
+| `turnbull` | `icenReg::ic_np` stratified by x (Turnbull NPMLE) | none (point accuracy only) | nonparametric accuracy benchmark for S(t\|x) in the simple cases |
+
+All simulation-based CIs use the same number of draws (nsim = 500, equalized
+so coverage differences are not tail-order-statistic artifacts; an LRZ
+sensitivity run over nsim ∈ {200, 500, 1000} showed identical coverage).
+Within each Turnbull equivalence class (where the NPMLE is flat or
+undefined), S is scored at the midpoint of the upper/lower envelope and the
+half-gap is recorded as `ambiguity`. Note one deliberate construction
+difference: MI β CIs are Barnard–Rubin t, midpoint/oracle/ic_par β CIs are
+Wald z. External methods apply only in the single-event, linear-effect cells;
+the smooth-f(x) and competing-risks arms compare internal methods only
+(mi/midpoint/oracle).
+
+Model formulas (mgcv syntax): PH cells `~ s(tend, k = 10) + x`; TV cells add
+`+ s(tend, by = x_num, k = 10)`; spoke S `~ s(tend, k = 10) + s(x, k = 10)`;
+CR arm `~ s(tend, by = cause, k = 10) + cause + cause:x`.
+
+## Data-generating processes and design
+
+Data are simulated with `pammtools::sim_pexp()` on a fine grid
+(FINE = seq(0, 10, 0.05)) and interval-censored with
+`pammtools::add_inspections()`. All methods analyze the same frozen grid
+CUT = seq(0, 10, 0.5); estimands are evaluated at t ∈ {1, 2, 3, 5, 7}.
+
+**Hazards.** Log-baseline shapes: *const* −1.5 (Weibull-compatible; `ic_par`
+correctly specified), *peaked* −3.2 + 1.6·exp(−(t−3)²/2) (non-monotone; no
+Weibull can match it), *rising* −3.7 + 0.12t (spoke R). Covariate effects:
+*ph* β·x with β = 0.6 and binary x (p = 0.5 — chosen so the stratified
+Turnbull NPMLE is directly comparable); *tv* β(t)·x with
+β(t) = 1.2·exp(−0.3t); *smooth* f(x) = 0.8·sin(πx) with x ~ U(−1, 1). The CR
+arm uses two independent latent cause-specific hazards (cause 1 peaked with
+β₁ = 0.7, cause 2 rising with β₂ = −0.5, x ~ U(−1, 1)); the `cr_unknown` cell
+additionally masks 30% of observed event causes to exercise
+`pamm_ic_cr`'s cause-imputation branch.
+
+**Inspection mechanisms.** *random*: per-subject inspection grids with
+Exp(rate) gaps, rate ∈ {1.5, 0.6, 0.3} — mean gap 1/rate ≈ 0.67 / 1.67 / 3.33,
+i.e. dense → sparse interval censoring. *fixed*: one shared deterministic
+schedule for all subjects (dense gap 2/3, sparse gap 10/3). *mixed*: the fixed
+schedule shifted per subject by U(0, gap). The event time is bracketed by the
+nearest inspections (L, R]; events after the last inspection or horizon are
+right-censored. **Caveat (fixed schedule):** with one shared grid, S(t) is
+nonparametrically identified *only at the schedule points*; elsewhere all
+methods score model-based interpolation, and sparse-grid hazard estimands can
+be degenerate. These cells are robustness exhibits, never headlined alongside
+the random-inspection cells.
+
+**Truth computation.** `sim_pexp()` draws from a *left-endpoint
+piecewise-constant* hazard on FINE, not from the smooth formula. All truths
+(S, interval-average hazard, logHR, CIF) are therefore computed **exactly**
+from those same FINE rate vectors via cumulative sums (`dgp.R`) — truth and
+simulator derive from one definition and cannot diverge. Phase 0 verified
+this against a large-sample Kaplan–Meier (max |ΔS| ≤ 0.0016) and an
+independent `survival::survfit` Turnbull cross-check.
+
+**Design.** A core factorial plus targeted spokes; the cells present in this
+run:
+
+```{r design-table}
+design <- tl |>
+  distinct(cell_id, arm, baseline, effect, mechanism, rate, n, m) |>
+  group_by(arm) |>
+  summarise(
+    cells = n(),
+    baseline = paste(sort(unique(baseline)), collapse = ", "),
+    effect = paste(sort(unique(effect)), collapse = ", "),
+    mechanism = paste(sort(unique(mechanism)), collapse = ", "),
+    rate = paste(sort(unique(rate), decreasing = TRUE), collapse = ", "),
+    n = paste(sort(unique(n)), collapse = ", "),
+    m = paste(sort(unique(m)), collapse = ", "),
+    .groups = "drop"
+  ) |>
+  arrange(match(arm, c(
+    "core", "mech", "rising", "smooth", "mimp", "cr", "cr_unknown"
+  )))
+knitr::kable(design)
+```
+
+The core arm crosses baseline × effect × inspection rate × n under random
+inspections; the spokes vary one factor each off the (peaked, ph, n = 300)
+reference cell: inspection *mech*anism, *rising* baseline, *smooth* f(x),
+number of imputations (*mimp*), and competing risks. Acknowledged gaps:
+mechanism × n and mechanism × effect interactions are untested, so spoke
+conclusions are conditional on the reference cell.
+
+## Estimands
+
+All estimands are aligned exactly to the piecewise-exponential DGP:
+
+- **S(t|x)** at TEVAL × x ∈ {0, 1} — well-defined for every method, hence the
+  headline estimand for cross-method comparison.
+- **Hazard** as the *interval average* h̄ⱼ = (H(tⱼ) − H(tⱼ₋₁)) / 0.5 on the CUT
+  interval ending at each TEVAL. Rationale: a PAMM estimates piecewise-constant
+  hazards on CUT; scoring it against the smooth endpoint hazard h(tⱼ) would
+  build up to ~25% "bias" on the peak flanks for *all* methods — a
+  discretization artifact, not a method property. `ic_par` is scored the same
+  way via closed-form cumulative-hazard differences.
+- **logHR(t)** = log h̄ⱼ(1) − log h̄ⱼ(0); constant = β under PH. In TV cells the
+  PH-only comparators are evaluated against the *least-false constant logHR*
+  (Cox projection from one large-n exact-time fit; overlay in Fig 5) rather
+  than as covering β(t).
+- **β** (scalar, PH cells); **f(x)** on an x-grid, with estimate and truth both
+  centered to mean zero over the grid (spoke S); **CIF₁/CIF₂(t)** at x = 0
+  (CR arm).
+
+## Performance measures and Monte Carlo precision
+
+Per Morris et al. (2019): bias, empirical SE, RMSE, 95% CI coverage,
+bias-eliminated coverage (CI shifted to cover the mean estimate — separates
+"CIs too narrow" from "point estimate biased"), CI width, the avSE/empSE
+ratio (model-based vs empirical SE; the most diagnostic quantity behind
+coverage failures), failure rates and fit times — each with Monte Carlo SEs.
+Two aggregation details matter:
+
+- avSE/empSE for grid-valued estimands is computed *within* each (t, x) grid
+  point and then median-summarized; pooling errors across the grid mixes
+  cross-point bias heterogeneity into "empSE" and invalidates the ratio.
+- CI widths are summarized by medians and q90 with a flag for extreme widths,
+  since single pathological replications (vacuous CIs in weakly identified
+  cells) make raw means meaningless.
+
+n_sim = 500 reps/cell gives a coverage MC SE of ≈ 1.0% at 95% nominal. The
+headline MI-vs-midpoint contrasts therefore use **paired differences** (both
+methods see the same data in each rep) with paired MC SEs, which are
+substantially more precise than per-method coverage; term-level
+(grid-averaged) coverage MC SEs are clustered at the replication level.
+
+# Results
+
 ## Failure rates
 
 ```{r failures, results = "asis"}

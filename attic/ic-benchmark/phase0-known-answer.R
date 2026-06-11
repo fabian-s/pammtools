@@ -10,6 +10,11 @@
 #  (c) pamm_ic with near-exact intervals (rate=20) ~ oracle on the same reps
 #  (d) Turnbull cross-check: icenReg::ic_np vs survival::survfit NPMLE
 #  (e) icenReg API checks (covarOffset, getFitEsts, getSCurves shapes)
+#  (f) well-specified parametric comparator under SPARSE inspection: ic_par
+#      (Weibull supseteq exponential = const baseline) at rate 0.3 must be
+#      nominal at ALL t -- the gate that catches informative-censoring defects
+#      in the inspection DGP (Gate-R3 lesson: (b)/(c) use near-exact intervals
+#      and are blind to them)
 # Usage: Rscript attic/ic-benchmark/phase0-known-answer.R [n_reps] [n_cores]
 # ===========================================================================
 
@@ -214,6 +219,45 @@ check(
   is.matrix(sp$bsMat) && "x_num" %in% colnames(sp$bsMat),
   "ic_sp bsMat has coefficient column"
 )
+
+# ---- (f) well-specified ic_par under sparse inspection --------------------------
+cat(sprintf(
+  "\n--- (f) well-specified ic_par, const baseline, rate 0.3 (%d reps) ---\n",
+  n_reps
+))
+cell_f <- CELLS[CELLS$cell_id == "core-const-ph-random-r0.3-n1000-m10", ]
+stopifnot(nrow(cell_f) == 1)
+
+one_rep_f <- function(i) {
+  seed <- 8e6 + i
+  dat <- generate_data(cell_f, seed)
+  sub <- method_subseeds(seed)
+  run_method("ic_par", dat, cell_f, sub[METHOD_INDEX["ic_par"]]) |>
+    score_rep(cell_f) |>
+    mutate(rep = i)
+}
+res_f <- bind_rows(parallel::mclapply(
+  seq_len(n_reps),
+  function(i) {
+    tryCatch(one_rep_f(i), error = function(e) {
+      tibble(rep = i, error_msg = conditionMessage(e))
+    })
+  },
+  mc.cores = n_cores,
+  mc.preschedule = FALSE
+))
+errs_f <- res_f |> filter(!is.na(error_msg)) |> distinct(rep, error_msg)
+if (nrow(errs_f)) {
+  cat("rep-level errors:\n")
+  print(head(errs_f, 10))
+}
+d_f <- res_f[is.na(res_f$error_msg) & !is.na(res_f$covered), ]
+gate(d_f[d_f$estimand == "surv", ], "ic_par(const, r0.3) S(t|x) all t")
+# late-t S coverage is THE sharp signature of informative right-censoring
+# (pre-fix production value here: 0.37)
+gate(d_f[d_f$estimand == "surv" & d_f$t == 7, ], "ic_par(const, r0.3) S(7|x)")
+gate(d_f[d_f$estimand == "beta", ], "ic_par(const, r0.3) beta")
+gate(d_f[d_f$estimand == "hazard", ], "ic_par(const, r0.3) hazard")
 
 cat(sprintf(
   "\n%s\n",
