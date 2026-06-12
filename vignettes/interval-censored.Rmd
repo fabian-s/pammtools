@@ -378,8 +378,9 @@ standard errors remain honest -- coverage *deteriorates as $n$ grows*.
 The remedy is `iter`: with `iter = k`, each imputation chain alternates
 imputation and re-fitting on its own completed data $k$ times, so later
 imputations come from fits whose dependence on the initialiser is
-progressively attenuated (a chained-MI scheme in the spirit of
-poor-man's data augmentation / `mice`'s `maxit`).
+progressively attenuated (a chained-MI scheme in the spirit of poor man's
+data augmentation [@weitanner1990] and the `maxit` iterations of `mice`
+[@vanbuuren2011]).
 
 ```{r, eval = FALSE}
 fit_sparse <- pamm_ic(
