@@ -599,9 +599,9 @@ to render; for an analysis use a larger `m` and more posterior draws in
 
 * The interval cut-points are fixed once and shared across all imputations; this
   is required for the imputations to be poolable.
-* `proper = TRUE` (the default) draws the imputation-model coefficients from
-  their posterior before each imputation; this is what makes the pooled
-  intervals calibrated. `proper = FALSE` is for diagnostics only.
+* The imputation-model coefficients are drawn from their posterior before
+  each imputation ("proper" MI); this is what makes the pooled intervals
+  calibrated.
 * Recurrent-event and general multi-state interval censoring are not yet
   supported: imputing one transition time changes the at-risk window for the
   next, so the imputations must be drawn jointly along each subject's path -- a

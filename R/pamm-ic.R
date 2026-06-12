@@ -4,6 +4,9 @@
 #' time-to-event data using a multiple-imputation (MI) and re-fit strategy: exact
 #' event times are repeatedly drawn from the model-based conditional distribution
 #' \eqn{p(T \mid L < T \le R, x, \theta)} (see \code{\link{impute_ic_times}}),
+#' with \eqn{\theta} drawn from the imputation model's asymptotic posterior
+#' before each imputation ("proper" MI -- this is what makes the pooled
+#' intervals calibrated),
 #' each completed data set is transformed to PED format with the standard
 #' (right-censored) pipeline and re-fit, and the resulting fits are pooled for
 #' inference with the existing \code{add_*} family (see \code{\link{add_surv_prob}}
@@ -48,10 +51,6 @@
 #'   weakly identified imputation chain into divergent estimates with very
 #'   wide intervals (without \code{mgcv} warnings) -- inspect pooled smooth
 #'   effects for plausibility when iterating such models.
-#' @param proper Logical; if \code{TRUE} (default, "proper" MI) a coefficient
-#'   vector is drawn from the posterior \eqn{N(\hat\beta, V_\beta)} of the
-#'   fit the imputation is drawn from, propagating parameter uncertainty.
-#'   \code{FALSE} uses the point estimate and is intended for diagnostics only.
 #' @param init Initialiser for the first fit: \code{"midpoint"} (default) or
 #'   \code{"uniform"} imputation within each interval.
 #' @param id Name of the subject identifier column.
@@ -94,7 +93,6 @@ pamm_ic <- function(
   max_time = NULL,
   m = 10L,
   iter = 1L,
-  proper = TRUE,
   init = c("midpoint", "uniform"),
   id = "id",
   engine = "gam",
@@ -132,11 +130,10 @@ pamm_ic <- function(
     cache_mm <- cache
     ped_m <- NULL
     for (k in seq_len(iter)) {
-      beta_mm <- if (proper) {
-        as.numeric(rmvnorm(1, mean = coef(fit_mm), sigma = fit_mm[["Vp"]]))
-      } else {
-        coef(fit_mm)
-      }
+      # proper MI: draw the imputation-model coefficients from their posterior
+      beta_mm <- as.numeric(
+        rmvnorm(1, mean = coef(fit_mm), sigma = fit_mm[["Vp"]])
+      )
       t_imp <- impute_ic_times(
         fit_mm,
         ic,
@@ -168,7 +165,6 @@ pamm_ic <- function(
       model_formula = model_formula,
       m = m,
       iter = iter,
-      proper = proper,
       id_var = id,
       n_obs = n_obs,
       unstable_chains = warn_unstable_chains(fits),
@@ -210,7 +206,6 @@ pamm_ic_cr <- function(
   max_time = NULL,
   m = 10L,
   iter = 1L,
-  proper = TRUE,
   censor_code = 0L,
   id = "id",
   engine = "gam",
@@ -285,11 +280,10 @@ pamm_ic_cr <- function(
     cache_mm <- cache
     ped_m <- NULL
     for (k in seq_len(iter)) {
-      beta_mm <- if (proper) {
-        as.numeric(rmvnorm(1, mean = coef(fit_mm), sigma = fit_mm[["Vp"]]))
-      } else {
-        coef(fit_mm)
-      }
+      # proper MI: draw the imputation-model coefficients from their posterior
+      beta_mm <- as.numeric(
+        rmvnorm(1, mean = coef(fit_mm), sigma = fit_mm[["Vp"]])
+      )
       imp <- impute_ic_cr(
         fit_mm,
         ic,
@@ -333,7 +327,6 @@ pamm_ic_cr <- function(
       model_formula = model_formula,
       m = m,
       iter = iter,
-      proper = proper,
       id_var = id,
       cause_levels = cause_levels,
       n_obs = n_obs,

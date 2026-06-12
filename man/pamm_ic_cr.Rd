@@ -13,7 +13,6 @@ pamm_ic_cr(
   max_time = NULL,
   m = 10L,
   iter = 1L,
-  proper = TRUE,
   censor_code = 0L,
   id = "id",
   engine = "gam",
@@ -61,11 +60,6 @@ effect terms and small samples, iterating can occasionally amplify a
 weakly identified imputation chain into divergent estimates with very
 wide intervals (without \code{mgcv} warnings) -- inspect pooled smooth
 effects for plausibility when iterating such models.}
-
-\item{proper}{Logical; if \code{TRUE} (default, "proper" MI) a coefficient
-vector is drawn from the posterior \eqn{N(\hat\beta, V_\beta)} of the
-fit the imputation is drawn from, propagating parameter uncertainty.
-\code{FALSE} uses the point estimate and is intended for diagnostics only.}
 
 \item{censor_code}{Value of \code{cause} that encodes censoring (default 0).}
 

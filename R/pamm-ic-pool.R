@@ -312,8 +312,7 @@ print.pamm_ic <- function(x, ...) {
   cat(
     "  via multiple imputation (",
     x[["m"]],
-    if (x[["proper"]]) " proper" else " improper",
-    " imputations)\n",
+    " proper imputations)\n",
     sep = ""
   )
   cat(
@@ -357,7 +356,6 @@ summary.pamm_ic <- function(object, ...) {
     list(
       type = object[["type"]],
       m = object[["m"]],
-      proper = object[["proper"]],
       model_formula = object[["model_formula"]],
       family = p[["family"]][["family"]],
       n_obs = object[["n_obs"]],
@@ -389,12 +387,7 @@ print.summary.pamm_ic <- function(x, ...) {
   )
   cat("Family         :", x[["family"]], "\n")
   cat("Model          :", deparse(x[["model_formula"]]), "\n")
-  cat(
-    "Imputations    :",
-    x[["m"]],
-    if (x[["proper"]]) "(proper)" else "(improper)",
-    "\n"
-  )
+  cat("Imputations    :", x[["m"]], "(proper)", "\n")
   cat(
     "Subjects       :",
     x[["n_subj"]],
