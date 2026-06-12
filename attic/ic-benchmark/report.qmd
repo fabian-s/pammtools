@@ -1,0 +1,1096 @@
+---
+title: "Interval-censored PAMMs: Monte Carlo benchmark"
+date: today
+format:
+  html:
+    toc: true
+    embed-resources: true
+    fig-width: 10
+    fig-height: 4.5
+execute:
+  echo: false
+  warning: false
+---
+
+```{r setup}
+suppressMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(purrr)
+  library(tibble)
+})
+bench_dir <- if (file.exists("config.R")) "." else "attic/ic-benchmark"
+res <- readRDS(file.path(bench_dir, "results", "summary.rds"))
+tl <- res$term_level
+pw <- res$pointwise |>
+  left_join(
+    distinct(tl, cell_id, arm, baseline, effect, rate, n, mean_int),
+    by = "cell_id"
+  )
+paired <- res$paired
+theme_set(theme_bw(base_size = 12))
+cols <- c(
+  oracle = "#1b9e77", mi = "#1f78b4", midpoint = "#e31a1c",
+  ic_par = "#ff7f00", ic_sp = "#6a3d9a", turnbull = "#b15928"
+)
+meth_lvls <- names(cols)
+tl <- tl |> mutate(method = factor(method, levels = meth_lvls))
+pw <- pw |> mutate(method = factor(method, levels = meth_lvls))
+n_rep_prod <- max(tl$n_rep)
+```
+
+All prose numbers in this report are computed from `results/summary.rds`
+(`r res$n_raw_rows` raw result rows, up to `r n_rep_prod` replications per
+cell). Monte Carlo SEs for grid-averaged coverage are clustered at the
+replication level. Cells where a method is misspecified by design are flagged
+with open symbols.
+
+# Design
+
+## Aims
+
+This benchmark validates and compares the interval-censored (IC) survival
+workflow added to `pammtools`: `pamm_ic()` / `pamm_ic_cr()` fit piecewise
+exponential additive mixed models (PAMMs) to interval-censored data by
+multiple imputation — exact event times are drawn from a conditional
+piecewise-exponential hazard initialized from a midpoint-imputed fit
+(one-step MI), a PAMM is fit per imputation, and inference is pooled via
+Rubin's rules. The study follows the ADEMP framework (Morris, White &
+Crowther 2019, *Stat Med*).
+
+- **A1 (validation):**  
+does `pamm_ic` MI inference attain nominal 95%
+  coverage and low bias for hazard, survival, covariate effects, time-varying
+  effects and competing-risks CIFs, across inspection sparsity, inspection
+  mechanisms and baseline-hazard shapes?
+- **A2 (comparison):**  
+how does it compare against established external IC
+  methods — `icenReg::ic_par` (parametric Weibull PH), `icenReg::ic_sp`
+  (semiparametric PH) and the Turnbull NPMLE (`icenReg::ic_np`) — including
+  cells where the parametric comparator is **misspecified by design**? The
+  headline misspecification exhibit is `ic_par`'s S(t|x) behavior under the
+  non-Weibull "peaked" baseline; PH-only comparators in time-varying-effect
+  cells are reported as *estimand mismatch* (they target a least-false
+  constant logHR), never as headline "coverage failure".
+
+The design was frozen pre-production at Gate R2 (three external review gates:
+code, pilot, results; see the decision log in `README.md`). The earlier
+200-rep prototype is `attic/ic-simulation-study.R`.
+
+## Methods compared
+
+| Method | Fit | Confidence intervals | Role |
+|---|---|---|---|
+| `oracle` | PAMM on the **exact** (uncensored) event times, analysis grid CUT | simulation CIs, 500 posterior draws | upper reference bound: best achievable on this grid; isolates the cost of interval censoring |
+| `mi` | `pamm_ic` / `pamm_ic_cr`: m = 10 imputations (5/20 in spoke I), PAMM per imputation, Rubin-pooled | pooled posterior draws (500 total); scalar β via Rubin's rules with Barnard–Rubin small-sample df | the method under test |
+| `midpoint` | single PAMM on midpoint-imputed times ((L + min(R, horizon))/2; right-censored at L if R = ∞) | simulation CIs, 500 draws | naive single-imputation comparator: ignores imputation uncertainty |
+| `ic_par` | `icenReg::ic_par`, Weibull PH | Wald z for β; S/hazard via 500 normal coefficient draws pushed through the closed-form Weibull | external parametric comparator; **misspecified by design** under the peaked baseline and in TV cells |
+| `ic_sp` | `icenReg::ic_sp`, semiparametric PH (NPMLE baseline) | β: bootstrap percentile (500 resamples) in 4 designated cells, point-only elsewhere; S(t\|x) point-only (the bootstrap covers coefficients, not the NPMLE baseline) | external semiparametric comparator |
+| `turnbull` | `icenReg::ic_np` stratified by x (Turnbull NPMLE) | none (point accuracy only) | nonparametric accuracy benchmark for S(t\|x) in the simple cases |
+
+All simulation-based CIs use the same number of draws (nsim = 500, equalized
+so coverage differences are not tail-order-statistic artifacts; a 20-rep LRZ
+sensitivity run over nsim ∈ {200, 500, 1000} found coverage differences well
+below MC SE — decision log, 2026-06-10).
+Within each Turnbull equivalence class (where the NPMLE is flat or
+undefined), S is scored at the midpoint of the upper/lower envelope and the
+half-gap is recorded as `ambiguity`. Note one deliberate construction
+difference: MI β CIs are Barnard–Rubin t, midpoint/oracle/ic_par β CIs are
+Wald z. External methods apply only in the single-event, linear-effect cells;
+the smooth-f(x) and competing-risks arms compare internal methods only
+(mi/midpoint/oracle).
+
+Model formulas (`mgcv` syntax): 
+
+- PH cells `~ s(tend, k = 10) + x`
+- TV cells add `+ s(tend, by = x_num, k = 10)`
+- spoke S `~ s(tend, k = 10) + s(x, k = 10)`
+- CR arm `~ s(tend, by = cause, k = 10) + cause + cause:x`.
+
+## Data-generating processes and design
+
+Data are simulated with `pammtools::sim_pexp()` on a fine grid
+(FINE = `seq(0, 10, 0.05)`) and interval-censored with
+`pammtools::add_inspections()`. All methods analyze the same frozen grid
+(CUT = `seq(0, 10, 0.5)`); estimands are evaluated at t ∈ {1, 2, 3, 5, 7} (TEVAL).
+
+**Hazards.** 
+
+Log-baseline shapes: 
+ 
+- *const* −1.5 (Weibull-compatible; `ic_par`
+correctly specified)
+- *peaked* −3.2 + 1.6·exp(−(t−3)²/2) (non-monotone; no
+Weibull can match it)
+- *rising* −3.7 + 0.12t (spoke R). 
+
+Covariate effects:
+
+- *ph* β·x with β = 0.6 and binary x (p = 0.5 — chosen so the stratified
+Turnbull NPMLE is directly comparable)
+- *tv* β(t)·x with
+β(t) = 1.2·exp(−0.3t)
+- *smooth* f(x) = 0.8·sin(πx) with x ~ U(−1, 1). 
+
+The CR arm uses two independent latent cause-specific hazards (cause 1 peaked with
+β₁ = 0.7, cause 2 rising with β₂ = −0.5, x ~ U(−1, 1)); the `cr_unknown` cell
+additionally masks 30% of observed event causes to exercise `pamm_ic_cr`'s cause-imputation branch.
+
+**Inspection mechanisms.** 
+
+- *random*: per-subject inspection grids with
+Exp(rate) gaps, rate ∈ {1.5, 0.6, 0.3} — mean gap 1/rate ≈ 0.67 / 1.67 / 3.33,
+i.e. dense → sparse interval censoring. 
+- *fixed*: one shared deterministic schedule for all subjects (dense gap 2/3, sparse gap 10/3). 
+- *mixed*: the fixed schedule shifted per subject by U(0, gap). 
+
+Every inspection grid additionally contains an **end-of-study examination at the horizon** (`terminal_exam = TRUE`
+in `add_inspections`), so the event time is always bracketed by the nearest
+inspections (L, R] with R ≤ 10, and only subjects event-free at the horizon are
+right-censored. (Mixing conventions — exact exit times for survivors but open
+intervals for undetected events — would make the right-censoring informative;
+the fraction of events bracketed only by the terminal exam is recorded as `prop_terminal_only`.)  
+
+**Caveat (fixed schedule):** with one shared grid, S(t) is
+nonparametrically identified *only at the schedule points*; elsewhere all
+methods score model-based interpolation, and sparse-grid hazard estimands can
+be degenerate. These cells are robustness exhibits, never headlined alongside
+the random-inspection cells.
+
+**Truth computation.** `sim_pexp()` draws from a *left-endpoint
+piecewise-constant* hazard on FINE, not from the smooth formula. All truths
+(S, interval-average hazard, logHR, CIF) are therefore computed **exactly**
+from those same FINE rate vectors via cumulative sums (`dgp.R`) — truth and
+simulator derive from one definition and cannot diverge. Phase 0 verified
+this against a large-sample Kaplan–Meier (max |ΔS| ≤ 0.0016) and an
+independent `survival::survfit` Turnbull cross-check.
+
+**Design.** A core factorial plus targeted spokes; the cells present in this
+run:
+
+```{r design-table}
+design <- tl |>
+  distinct(cell_id, arm, baseline, effect, mechanism, rate, n, m) |>
+  group_by(arm) |>
+  summarise(
+    cells = n(),
+    baseline = paste(sort(unique(baseline)), collapse = ", "),
+    effect = paste(sort(unique(effect)), collapse = ", "),
+    mechanism = paste(sort(unique(mechanism)), collapse = ", "),
+    rate = paste(sort(unique(rate), decreasing = TRUE), collapse = ", "),
+    n = paste(sort(unique(n)), collapse = ", "),
+    m = paste(sort(unique(m)), collapse = ", "),
+    .groups = "drop"
+  ) |>
+  arrange(match(arm, c(
+    "core", "mech", "rising", "smooth", "mimp", "cr", "cr_unknown"
+  )))
+knitr::kable(design)
+```
+
+The core arm crosses baseline × effect × inspection rate × n under random
+inspections; the spokes vary one factor each off the (peaked, ph, n = 300)
+reference cell: inspection *mech*anism, *rising* baseline, *smooth* f(x),
+number of imputations (*mimp*), and competing risks.  
+
+Acknowledged gaps:  
+mechanism × n and mechanism × effect interactions are untested, so spoke
+conclusions are conditional on the reference cell.
+
+## Estimands
+
+All estimands are aligned exactly to the piecewise-exponential DGP:
+
+- **S(t|x)** at TEVAL × x ∈ {0, 1} — well-defined for every method, hence the
+  headline estimand for cross-method comparison.
+- **Hazard** as the *interval average* h̄ⱼ = (H(tⱼ) − H(tⱼ₋₁)) / 0.5 on the CUT
+  interval ending at each TEVAL. Rationale: a PAMM estimates piecewise-constant
+  hazards on CUT; scoring it against the smooth endpoint hazard h(tⱼ) would
+  build up to ~25% "bias" on the peak flanks for *all* methods — a
+  discretization artifact, not a method property. `ic_par` is scored the same
+  way via closed-form cumulative-hazard differences.
+- **logHR(t)** = log h̄ⱼ(1) − log h̄ⱼ(0); constant = β under PH. In TV cells the
+  PH-only comparators are evaluated against the *least-false constant logHR*
+  (Cox projection from one large-n exact-time fit; overlay in Fig 5) rather
+  than as covering β(t).
+- **β** (scalar, PH cells) 
+- **f(x)** on an x-grid, with estimate and truth both
+  centered to mean zero over the grid (spoke S)
+- **CIF₁/CIF₂(t)** at x = 0 (CR arm).
+
+## Performance measures and Monte Carlo precision
+
+Per Morris et al. (2019): bias, empirical SE, RMSE, 95% CI coverage,
+bias-eliminated coverage (CI shifted to cover the mean estimate — separates
+"CIs too narrow" from "point estimate biased"), CI width, the avSE/empSE
+ratio (model-based vs empirical SE; the most diagnostic quantity behind
+coverage failures), failure rates and fit times — each with Monte Carlo SEs.
+Two aggregation details matter:
+
+- avSE/empSE for grid-valued estimands is computed *within* each (t, x) grid
+  point and then median-summarized; pooling errors across the grid mixes
+  cross-point bias heterogeneity into "empSE" and invalidates the ratio.
+- CI widths are summarized by medians and q90 with a flag for extreme widths,
+  since single pathological replications (vacuous CIs in weakly identified
+  cells) make raw means meaningless.
+
+n_sim = 500 reps/cell gives a coverage MC SE of ≈ 1.0% at 95% nominal. The
+headline MI-vs-midpoint contrasts therefore use **paired differences** (both
+methods see the same data in each rep) with paired MC SEs, which are
+substantially more precise than per-method coverage; term-level
+(grid-averaged) coverage MC SEs are clustered at the replication level.
+
+# Results
+
+## Failure rates
+
+```{r failures, results = "asis"}
+fl <- res$failures |> filter(n_fail > 0)
+if (nrow(fl) == 0) {
+  cat("No method failures occurred in any cell.\n")
+} else {
+  cat(sprintf(
+    "%d (cell, method) combinations had failures; max failure rate %.1f%% (%s, %s).\n\n",
+    nrow(fl), 100 * max(fl$fail_rate),
+    fl$cell_id[which.max(fl$fail_rate)], fl$method[which.max(fl$fail_rate)]
+  ))
+  knitr::kable(fl |> select(-warn_rate, -first_warning), digits = 3)
+}
+if (nrow(res$missing) > 0) {
+  cat(sprintf("\n**WARNING: %d missing (cell, rep) combinations.**\n",
+              nrow(res$missing)))
+}
+wl <- res$failures |> filter(warn_rate > 0.10)
+if (nrow(wl) > 0) {
+  cat(sprintf(
+    "\nFailures are not the whole story: %d (cell, method) combinations had fitter warnings in >10%% of reps (these reps ARE included in all summaries):\n\n",
+    nrow(wl)
+  ))
+  print(knitr::kable(
+    wl |>
+      mutate(first_warning = substr(first_warning, 1, 60)) |>
+      select(cell_id, method, warn_rate, first_warning),
+    digits = 3
+  ))
+  cat(
+    "\nSystematic warnings are concentrated in the fixed-schedule robustness",
+    "cells, where the shared sparse inspection grid leaves hazards weakly",
+    "identified between schedule points (see Design: fixed-schedule caveat).\n"
+  )
+}
+```
+
+## Fig 1 (headline): coverage of S(t|x) and interval-average hazard
+
+```{r fig1, fig-height: 7}
+d1 <- tl |>
+  filter(arm == "core", estimand %in% c("surv", "hazard"), !is.na(coverage))
+ggplot(d1, aes(mean_int, coverage, colour = method, shape = misspecified)) +
+  geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+  geom_pointrange(aes(
+    ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
+  ), position = position_dodge(width = 0.12)) +
+  geom_line(alpha = .5) +
+  facet_grid(estimand + n ~ baseline + effect) +
+  scale_colour_manual(values = cols) +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(
+    x = "mean inspection-interval length", y = "95% CI coverage (grid-avg)",
+    colour = NULL, shape = "misspecified",
+    title = "Coverage of S(t|x) and interval-average hazard, core factorial",
+    subtitle = "pointranges: +-1 MC SE (rep-clustered)"
+  )
+```
+
+```{r fig1-prose, results = "asis"}
+mi_s <- d1 |> filter(method == "mi", estimand == "surv")
+md_s <- d1 |> filter(method == "midpoint", estimand == "surv")
+cat(sprintf(
+  "MI survival coverage across core cells: %.3f-%.3f (median %.3f). Midpoint: %.3f-%.3f (median %.3f).\n",
+  min(mi_s$coverage), max(mi_s$coverage), median(mi_s$coverage),
+  min(md_s$coverage), max(md_s$coverage), median(md_s$coverage)
+))
+mi_d <- d1 |> filter(method == "mi", rate == 1.5)
+for (es in c("surv", "hazard")) {
+  dd <- mi_d |> filter(estimand == es)
+  worst <- dd |> slice_min(coverage, n = 1)
+  cat(sprintf(
+    "Under dense inspection (rate 1.5), MI %s coverage is %.3f-%.3f; the worst cell (%s: %.3f, MC SE %.3f) has bias-eliminated coverage %.3f, i.e. any shortfall is point-estimate bias, not SE failure.\n",
+    es, min(dd$coverage), max(dd$coverage),
+    worst$cell_id, worst$coverage, worst$coverage_mcse, worst$be_coverage
+  ))
+}
+```
+
+```{r fig1-sparse-prose, results = "asis"}
+# headline sparse-cell story (computed; required at Gate R3-final)
+pto <- mean(tl$prop_terminal_only[tl$arm == "core" & tl$rate == 0.3],
+            na.rm = TRUE)
+grad <- tl |>
+  filter(arm == "core", rate == 0.3, effect == "ph", estimand == "surv",
+         method == "mi") |>
+  arrange(baseline, n)
+gtxt <- paste(
+  sprintf("%s n=%d: %.3f (BE %.3f)",
+          grad$baseline, grad$n, grad$coverage, grad$be_coverage),
+  collapse = "; "
+)
+p1 <- pw |>
+  filter(cell_id == "core-const-ph-random-r0.3-n1000-m10",
+         estimand == "surv", t == 1, x == 0)
+mi1 <- p1 |> filter(method == "mi")
+tb1 <- p1 |> filter(method == "turnbull")
+md_sp <- tl |>
+  filter(arm == "core", rate == 0.3, estimand == "surv", method == "midpoint")
+cat(sprintf(
+  "**Sparse inspection (rate 0.3; %.1f%% of events bracketed only by the end-of-study exam).** MI under-covers S(t|x), and the shortfall grows with n at fixed bias (grid-averaged coverage, BE = bias-eliminated: %s) -- the signature of point-estimate bias with honest SEs. The bias is genuine one-step-MI bias concentrated at early-to-mid t: in const-ph/n1000, S(1|0) bias is %+.3f (coverage %.3f), while the Turnbull NPMLE on the *same data* recovers S(1|0) with bias %+.3f. The information is in the data; the single midpoint-initialized imputation model leaves it on the table. Midpoint imputation is far worse still (coverage %.3f-%.3f): events bracketed only by the terminal exam are imputed at (L+10)/2, beyond their conditional expectation under the true hazard, a structural bias that one-step MI attenuates but does not remove.\n",
+  100 * pto, gtxt, mi1$bias, mi1$coverage, tb1$bias,
+  min(md_sp$coverage), max(md_sp$coverage)
+))
+
+# estimand caveat: interval-average hazard at peaked baselines (oracle ceiling)
+hz <- tl |>
+  filter(arm == "core", baseline == "peaked", effect == "ph", n == 1000,
+         estimand == "hazard", method == "mi") |>
+  arrange(desc(rate))
+orc <- tl |>
+  filter(arm == "core", baseline == "peaked", estimand == "hazard",
+         method == "oracle")
+cat(sprintf(
+  "\n**Estimand caveat: interval-average hazard at peaked baselines.** MI hazard coverage in peaked-ph/n1000 is %s across rates 1.5/0.6/0.3 (BE %s) -- peak-attenuation point bias, not SE failure. The oracle itself attains only %.3f-%.3f on this estimand across peaked cells: a penalized-spline smoothing ceiling, not an interval-censoring phenomenon.\n",
+  paste(sprintf("%.3f", hz$coverage), collapse = "/"),
+  paste(sprintf("%.3f", hz$be_coverage), collapse = "/"),
+  min(orc$coverage), max(orc$coverage)
+))
+```
+
+## Fig 2: beta / logHR(t) coverage + paired MI−midpoint differences
+
+```{r fig2}
+d2 <- tl |>
+  filter(arm == "core", estimand %in% c("beta", "logHR"), !is.na(coverage))
+ggplot(d2, aes(mean_int, coverage, colour = method, shape = misspecified)) +
+  geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+  geom_pointrange(aes(
+    ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
+  ), position = position_dodge(width = 0.12)) +
+  facet_grid(estimand + n ~ baseline + effect) +
+  scale_colour_manual(values = cols) +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(
+    x = "mean inspection-interval length", y = "95% CI coverage",
+    title = "Covariate-effect coverage (beta in PH cells, logHR(t) grid-avg)",
+    subtitle = "open symbols: misspecified by design (constant-beta methods vs beta(t))"
+  )
+```
+
+```{r fig2b, fig-height: 4}
+ggplot(
+  paired |> filter(arm == "core"),
+  aes(factor(rate, levels = c(1.5, 0.6, 0.3)), diff, colour = estimand)
+) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
+  geom_pointrange(aes(ymin = diff - diff_mcse, ymax = diff + diff_mcse),
+    position = position_dodge(width = 0.4)
+  ) +
+  facet_grid(n ~ baseline + effect) +
+  labs(
+    x = "inspection rate (dense -> sparse)", y = "coverage(MI) - coverage(midpoint)",
+    title = "Paired MI - midpoint coverage differences (same data per rep)",
+    subtitle = "pointranges: +-1 paired MC SE"
+  )
+```
+
+```{r fig2b-prose, results = "asis"}
+pd <- paired |>
+  filter(arm == "core") |>
+  group_by(grp = ifelse(estimand %in% c("surv", "hazard"), "S/hazard", "beta/logHR")) |>
+  summarise(
+    lo = min(diff), hi = max(diff),
+    n_pos = sum(diff > 2 * diff_mcse),
+    n_neg = sum(diff < -2 * diff_mcse),
+    n = n(), .groups = "drop"
+  )
+for (i in seq_len(nrow(pd))) {
+  cat(sprintf(
+    "- Paired MI - midpoint coverage differences, %s: range %+.3f to %+.3f; MI significantly better (>2 paired MC SE) in %d/%d contrasts, significantly worse in %d.\n",
+    pd$grp[i], pd$lo[i], pd$hi[i], pd$n_pos[i], pd$n[i], pd$n_neg[i]
+  ))
+}
+sc <- pd[pd$grp == "beta/logHR", ]
+cat(sprintf(
+  "\nMI's coverage advantage over midpoint imputation is strongest for S(t|x)/hazard; for the scalar effect estimands (beta, logHR), MI is significantly better in %d and significantly worse in %d of %d contrasts.\n",
+  sc$n_pos, sc$n_neg, sc$n
+))
+bb <- tl |>
+  filter(method == "mi", estimand == "beta", arm == "core") |>
+  mutate(z = bias / bias_mcse) |>
+  filter(abs(z) > 2)
+if (nrow(bb)) {
+  cat(sprintf(
+    "\nMI beta bias is negligible except in %s.\n",
+    paste(sprintf("%s (%+.4f, z = %.1f; coverage %.3f)",
+                  bb$cell_id, bb$bias, bb$z, bb$coverage), collapse = "; ")
+  ))
+}
+```
+
+## Fig 3: point accuracy (RMSE, incl. Turnbull)
+
+```{r fig3}
+d3 <- tl |> filter(arm == "core", estimand == "surv")
+base_rmse <- d3 |>
+  filter(method == "oracle") |>
+  select(cell_id, rmse_oracle = rmse)
+d3 <- left_join(d3, base_rmse, by = "cell_id") |>
+  mutate(rrmse = rmse / rmse_oracle)
+ggplot(d3, aes(mean_int, rrmse, colour = method, shape = misspecified)) +
+  geom_hline(yintercept = 1, linetype = 2, colour = "grey40") +
+  geom_point(size = 2) + geom_line(alpha = .5) +
+  facet_grid(n ~ baseline + effect) +
+  scale_colour_manual(values = cols) +
+  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 1)) +
+  scale_y_log10(breaks = c(0.5, 1, 2, 5, 10)) +
+  labs(
+    x = "mean inspection-interval length", y = "RMSE relative to oracle (log)",
+    title = "S(t|x) point-estimate accuracy relative to the oracle"
+  )
+```
+
+```{r fig3-prose, results = "asis"}
+tb <- tl |> filter(method == "turnbull", estimand == "surv", arm == "core")
+if (nrow(tb)) {
+  rr <- d3 |>
+    filter(method %in% c("mi", "midpoint", "turnbull")) |>
+    group_by(method) |>
+    summarise(med_rrmse = median(rrmse, na.rm = TRUE), .groups = "drop")
+  n_tb_beats_mi <- d3 |>
+    select(cell_id, method, rrmse) |>
+    pivot_wider(names_from = method, values_from = rrmse) |>
+    summarise(v = sum(turnbull < mi, na.rm = TRUE), n = sum(!is.na(turnbull)))
+  cat(sprintf(
+    "Median RRMSE vs oracle: MI %.2f, midpoint %.2f, Turnbull %.2f; Turnbull beats MI in %d/%d core cells (it is a step-function NPMLE without smoothing). Turnbull mean equivalence-class half-gap (scoring ambiguity) ranges %.3f-%.3f across core cells.\n",
+    rr$med_rrmse[rr$method == "mi"], rr$med_rrmse[rr$method == "midpoint"],
+    rr$med_rrmse[rr$method == "turnbull"],
+    n_tb_beats_mi$v, n_tb_beats_mi$n,
+    min(pw$mean_ambiguity[pw$method == "turnbull"], na.rm = TRUE),
+    max(pw$mean_ambiguity[pw$method == "turnbull"], na.rm = TRUE)
+  ))
+}
+lr <- tl |>
+  filter(arm == "core", effect == "tv", n == 300, estimand == "logHR",
+         method %in% c("mi", "midpoint")) |>
+  select(cell_id, method, rmse) |>
+  pivot_wider(names_from = method, values_from = rmse) |>
+  mutate(rel = mi / midpoint)
+cat(sprintf(
+  "\nMI's coverage dominance does not extend to RMSE everywhere: for logHR(t) in the TV n=300 cells, MI RMSE is %.0f%%-%.0f%% of midpoint's (values >100%% = MI less accurate).\n",
+  100 * min(lr$rel), 100 * max(lr$rel)
+))
+```
+
+## Fig 4: CI width and avSE/empSE (the mechanism)
+
+```{r fig4}
+d4 <- tl |>
+  filter(arm == "core", estimand == "surv",
+         method %in% c("mi", "midpoint", "oracle", "ic_par")) |>
+  pivot_longer(c(median_width, se_ratio), names_to = "what")
+ggplot(d4, aes(mean_int, value, colour = method)) +
+  geom_point(size = 2) + geom_line(alpha = .5) +
+  facet_grid(what ~ baseline + effect + n, scales = "free_y") +
+  scale_colour_manual(values = cols) +
+  labs(
+    x = "mean inspection-interval length", y = NULL,
+    title = "S(t|x): median CI width and avSE/empSE ratio (median over grid)",
+    subtitle = "se_ratio < 1: model-based SE understates sampling variability"
+  )
+```
+
+```{r fig4-prose, results = "asis"}
+f4 <- tl |>
+  filter(arm == "core", estimand == "surv",
+         method %in% c("oracle", "mi", "midpoint", "ic_par"))
+sr <- range(f4$se_ratio)
+wr <- f4 |>
+  filter(method %in% c("mi", "midpoint")) |>
+  select(cell_id, rate, method, median_width) |>
+  pivot_wider(names_from = method, values_from = median_width) |>
+  mutate(r = mi / midpoint)
+cat(sprintf(
+  "**Interpretation.** Model-based SEs for S(t|x) are essentially honest for every method: se_ratio spans %.2f-%.2f across all core cells and methods, so no method fails by understating its own sampling variability here -- the S(t|x) coverage failures of Fig 1 are point-estimate bias, not SE failure. (This panel analyzes S(t|x) only; the other estimands' SE calibration is wider but their failures are likewise bias-dominated -- see the ANOVA section and appendix tables.) What separates MI from midpoint mechanically is the width column: MI intervals are wider by a median factor of %.2f (median %.2f in the sparsest cells), which is exactly the propagated imputation uncertainty that midpoint discards. Midpoint's narrower intervals around biased point estimates produce its coverage collapse; MI's wider intervals buy back most -- not all -- of it.\n",
+  sr[1], sr[2], median(wr$r), median(wr$r[wr$rate == 0.3])
+))
+```
+
+## Fig 5: time-varying effect recovery
+
+```{r fig5}
+lf_file <- file.path(bench_dir, "results", "least-false.rds")
+d5 <- pw |>
+  filter(effect == "tv", estimand == "logHR", n == 300,
+         method %in% c("mi", "midpoint", "oracle", "ic_par"))
+if (nrow(d5) > 0) {
+  lf_lines <- if (file.exists(lf_file)) {
+    readRDS(lf_file) |>
+      distinct(baseline, lf_cox) |>
+      semi_join(d5, by = "baseline")
+  } else {
+    NULL
+  }
+  p5 <- ggplot(d5, aes(t, mean_est, colour = method)) +
+    geom_line(aes(y = truth), colour = "black", linewidth = 0.9) +
+    geom_pointrange(
+      aes(ymin = mean_est - bias_mcse, ymax = mean_est + bias_mcse),
+      position = position_dodge(width = 0.3)
+    ) +
+    geom_line(alpha = 0.5, position = position_dodge(width = 0.3)) +
+    facet_grid(baseline ~ rate) +
+    scale_colour_manual(values = cols) +
+    labs(
+      x = "t", y = "logHR(t)",
+      title = "TV cells: mean estimated logHR(t) vs truth (black), n = 300",
+      subtitle = "dashed grey: least-false constant (Cox projection) -- ic_par's actual target"
+    )
+  if (!is.null(lf_lines)) {
+    p5 <- p5 +
+      geom_hline(
+        data = lf_lines, aes(yintercept = lf_cox),
+        linetype = 2, colour = "grey50"
+      )
+  }
+  print(p5)
+} else {
+  cat("(no TV-cell data in this run)")
+}
+```
+
+```{r fig5-prose, results = "asis"}
+if (file.exists(lf_file)) {
+  lf <- readRDS(lf_file) |> distinct(baseline, lf_cox, lf_weibull)
+  for (i in seq_len(nrow(lf))) {
+    cat(sprintf(
+      "- %s baseline: least-false constant logHR (exact-time convention): Cox %.3f, Weibull %.3f\n",
+      lf$baseline[i], lf$lf_cox[i], lf$lf_weibull[i]
+    ))
+  }
+  d5s <- d5 |>
+    group_by(method) |>
+    summarise(mad = mean(abs(mean_est - truth)), .groups = "drop")
+  g5 <- function(m) d5s$mad[d5s$method == m]
+  icp <- d5 |>
+    filter(method == "ic_par") |>
+    left_join(lf |> select(baseline, lf_cox), by = "baseline") |>
+    summarise(mad_lf = mean(abs(mean_est - lf_cox)))
+  cat(sprintf(
+    "\n**Interpretation.** The internal methods recover the time-varying effect: mean |E(estimate) - beta(t)| over the (t, rate, baseline) grid is %.3f for the oracle, %.3f for MI and %.3f for midpoint -- interval censoring costs surprisingly little here because beta(t) is smooth and the by-spline pools over time. ic_par cannot bend: its mean distance from beta(t) is %.3f, but only %.3f from its least-false constant (dashed line) -- it estimates the Cox projection it targets, an estimand mismatch as designed, not an estimation failure.\n",
+    g5("oracle"), g5("mi"), g5("midpoint"),
+    g5("ic_par"), icp$mad_lf
+  ))
+} else {
+  cat("Least-false projections not yet computed (results/least-false.rds missing).\n")
+}
+```
+
+## Fig 6: competing risks, smooth f(x), m-sensitivity
+
+```{r fig6a}
+d6 <- tl |> filter(arm %in% c("cr", "cr_unknown"), !is.na(coverage))
+ggplot(d6, aes(mean_int, coverage, colour = method, shape = arm)) +
+  geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+  geom_pointrange(aes(
+    ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
+  ), position = position_dodge(width = 0.1)) +
+  facet_wrap(~estimand, nrow = 1) +
+  scale_colour_manual(values = cols) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(
+    x = "mean inspection-interval length", y = "95% CI coverage",
+    title = "Competing-risks arm (triangle: 30% unknown causes)"
+  )
+```
+
+```{r fig6b, fig-height: 4}
+d6b <- tl |> filter(arm == "smooth", estimand == "f_x")
+if (nrow(d6b)) {
+  ggplot(d6b, aes(factor(rate), coverage, colour = method)) +
+    geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+    geom_pointrange(aes(
+      ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
+    ), position = position_dodge(width = 0.3)) +
+    scale_colour_manual(values = cols) +
+    coord_cartesian(ylim = c(0, 1)) +
+    labs(
+      x = "inspection rate", y = "95% CI coverage",
+      title = "Smooth f(x) coverage (spoke S, grid-avg over x)"
+    )
+}
+```
+
+```{r fig6c, fig-height: 4}
+d6c <- tl |>
+  filter(arm == "mimp" | cell_id == "core-peaked-ph-random-r0.6-n300-m10",
+         method == "mi", estimand %in% c("surv", "hazard", "beta"))
+if (nrow(d6c)) {
+  ggplot(d6c, aes(factor(m), coverage, colour = estimand)) +
+    geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+    geom_pointrange(aes(
+      ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
+    ), position = position_dodge(width = 0.3)) +
+    coord_cartesian(ylim = c(0.7, 1)) +
+    labs(
+      x = "number of imputations m", y = "95% CI coverage",
+      title = "m-sensitivity (spoke I; peaked, PH, rate 0.6, n = 300)"
+    )
+}
+```
+
+```{r fig6-prose, results = "asis"}
+# CR arm
+cr_mi <- tl |> filter(arm %in% c("cr", "cr_unknown"), method == "mi")
+cr_cmp <- tl |>
+  filter(rate == 0.6, arm %in% c("cr", "cr_unknown"), method == "mi") |>
+  select(arm, estimand, coverage, coverage_mcse) |>
+  pivot_wider(names_from = arm, values_from = c(coverage, coverage_mcse)) |>
+  mutate(
+    d = coverage_cr_unknown - coverage_cr,
+    lim = 2 * sqrt(coverage_mcse_cr^2 + coverage_mcse_cr_unknown^2)
+  )
+cif_sp <- tl |>
+  filter(arm == "cr", method == "mi", estimand == "cif1", rate == 0.3)
+cat(sprintf(
+  "**Competing risks (Fig 6a).** pamm_ic_cr's MI coverage spans %.3f-%.3f across CIF_1/CIF_2/beta_1/beta_2 and inspection rates (vs oracle %.3f-%.3f): the cause-specific MI pipeline broadly mirrors the single-event behaviour, including its sparse-cell bias signature (CIF_1 at rate 0.3: coverage %.3f, bias-eliminated %.3f). Masking 30%% of causes (cr_unknown, triangles) changes MI coverage by at most %+.3f vs the matched known-cause cell (all |differences| within 2 MC SE: %s) -- the cause-imputation branch neither breaks nor visibly degrades inference at this masking level.\n",
+  min(cr_mi$coverage), max(cr_mi$coverage),
+  min(tl$coverage[tl$arm == "cr" & tl$method == "oracle"]),
+  max(tl$coverage[tl$arm == "cr" & tl$method == "oracle"]),
+  cif_sp$coverage, cif_sp$be_coverage,
+  cr_cmp$d[which.max(abs(cr_cmp$d))],
+  ifelse(all(abs(cr_cmp$d) < cr_cmp$lim), "yes", "NO")
+))
+
+# smooth f(x)
+d6b2 <- tl |> filter(arm == "smooth", estimand == "f_x")
+if (nrow(d6b2)) {
+  s6 <- d6b2 |>
+    arrange(desc(rate)) |>
+    group_by(method) |>
+    summarise(txt = paste(sprintf("%.3f", coverage), collapse = "/"),
+              .groups = "drop")
+  cat(sprintf(
+    "\n**Smooth f(x) (Fig 6b).** Coverage at rates 1.5/0.3: %s. The smooth covariate effect is essentially IC-insensitive, as anticipated in the design (it does not vary over time, so coarsening event times barely touches it): every method tracks the oracle, though all sit a few MC SE below nominal, oracle included -- a spline/smoothing property, not an interval-censoring one.\n",
+    paste(sprintf("%s %s", s6$method, s6$txt), collapse = "; ")
+  ))
+}
+
+# m-sensitivity
+d6c2 <- tl |>
+  filter(arm == "mimp" | cell_id == "core-peaked-ph-random-r0.6-n300-m10",
+         method == "mi", estimand %in% c("surv", "hazard", "beta"))
+if (nrow(d6c2)) {
+  spread_m <- d6c2 |>
+    group_by(estimand) |>
+    summarise(spread = max(coverage) - min(coverage),
+              # null limit for a pairwise difference of two coverages
+              lim = 2 * sqrt(2) * max(coverage_mcse), .groups = "drop")
+  cat(sprintf(
+    "\n**Imputation count (Fig 6c).** Across m = 5/10/20 the coverage spread per estimand is %s (each below its two-MC-SE pairwise-difference limit of %s): no detectable m-sensitivity at this precision, so the package default m = 10 is comfortable and even m = 5 costs nothing measurable here.\n",
+    paste(sprintf("%s %.3f", spread_m$estimand, spread_m$spread), collapse = ", "),
+    paste(sprintf("%.3f", spread_m$lim), collapse = "/")
+  ))
+}
+```
+
+## Fig 7 — Extension: iterated MI
+
+The sparse-cell finding above (genuine one-step-MI bias at early t) motivated
+an extension over the *same simulated data*: `pamm_ic` gained an `iter`
+argument — `iter = 1` is the production one-step MI; `iter = k` alternates
+imputation and re-fitting within each imputation chain, so the final
+imputation's dependence on the midpoint initialiser is progressively
+attenuated (chained MI, ~linear cost in `iter`). Scope (decision log, 2026-06-11): `mi_iter3` (`iter = 3`) at
+500 reps on **all 24 core cells** (sparse cells = headline, dense cells =
+no-harm check) and `mi_iter5` at 500 reps on the **8 rate-0.3 cells**
+(convergence exhibit); both use the production per-rep data seeds, so every
+comparison below is paired rep-by-rep. Spokes and competing risks are out of
+scope (`pamm_ic_cr` has no `iter` yet).
+
+```{r fig7-setup}
+iter_file <- file.path(bench_dir, "results", "iter-summary.rds")
+has_iter <- file.exists(iter_file)
+if (has_iter) {
+  its <- readRDS(iter_file)
+  cols_iter <- c(
+    mi = "#1f78b4", mi_iter3 = "#33a02c", mi_iter5 = "#004529",
+    oracle = "#1b9e77"
+  )
+}
+```
+
+```{r fig7a, fig-height: 5}
+if (has_iter) {
+  d7 <- bind_rows(
+    its$term_level |>
+      filter(method %in% c("mi", "mi_iter3"), estimand == "surv"),
+    tl |>
+      filter(arm == "core", method == "oracle", estimand == "surv") |>
+      select(cell_id, method, estimand, coverage, coverage_mcse,
+             baseline, effect, rate, n, mean_int) |>
+      mutate(method = "oracle")
+  )
+  ggplot(d7, aes(mean_int, coverage, colour = method)) +
+    geom_hline(yintercept = 0.95, linetype = 2, colour = "grey40") +
+    geom_pointrange(aes(
+      ymin = coverage - coverage_mcse, ymax = coverage + coverage_mcse
+    ), position = position_dodge(width = 0.12)) +
+    geom_line(alpha = .5, position = position_dodge(width = 0.12)) +
+    facet_grid(n ~ baseline + effect) +
+    scale_colour_manual(values = cols_iter) +
+    coord_cartesian(ylim = c(0.4, 1)) +
+    labs(
+      x = "mean inspection-interval length", y = "95% CI coverage (grid-avg)",
+      title = "S(t|x) coverage: one-step MI vs iterated MI (iter = 3), all core cells",
+      subtitle = "paired with production data; oracle as reference; pointranges +-1 MC SE"
+    )
+} else {
+  cat("(iterated-MI results not yet aggregated: results/iter-summary.rds missing)")
+}
+```
+
+```{r fig7b, fig-height: 4}
+if (has_iter) {
+  d7b <- its$pointwise |>
+    filter(rate == 0.3, estimand == "surv", x == 0, t %in% c(1, 2, 3))
+  ggplot(d7b, aes(factor(iter), bias, colour = factor(t), group = t)) +
+    geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
+    geom_pointrange(aes(ymin = bias - bias_mcse, ymax = bias + bias_mcse)) +
+    geom_line(alpha = .6) +
+    facet_grid(n ~ baseline + effect) +
+    labs(
+      x = "imputation iterations (iter)", y = "bias of S(t|0)",
+      colour = "t",
+      title = "Early-time survival bias vs iteration count, rate-0.3 cells",
+      subtitle = "iter = 1: production one-step MI; 500 reps, paired"
+    )
+}
+```
+
+```{r fig7-prose, results = "asis"}
+if (has_iter) {
+  # no-harm check under dense inspection (where iteration is unnecessary)
+  nh <- its$paired |>
+    filter(method == "mi_iter3", rate == 1.5)
+  worst_nh <- nh |> slice_min(diff, n = 1)
+  verdict_nh <- if (abs(worst_nh$diff) <= 2 * worst_nh$diff_mcse) {
+    "within 2 paired MC SE of zero"
+  } else if (abs(worst_nh$diff) < 0.02) {
+    "statistically distinguishable but far below the +-2pp practical-significance threshold"
+  } else {
+    "PRACTICALLY SIGNIFICANT HARM -- investigate"
+  }
+  cat(sprintf(
+    "**No-harm check (dense inspection, rate 1.5).** Across %d paired (cell, estimand) contrasts, iterated MI's coverage difference vs one-step ranges %+.3f to %+.3f; the most negative (%s, %s: %+.3f, paired MC SE %.3f) is %s. Iterating when it is not needed costs essentially nothing but compute.\n\n",
+    nrow(nh), min(nh$diff), max(nh$diff),
+    worst_nh$cell_id, worst_nh$estimand, worst_nh$diff, worst_nh$diff_mcse,
+    verdict_nh
+  ))
+  # moderate sparsity: iter = 3 restores nominal
+  md3 <- its$term_level |>
+    filter(method == "mi_iter3", rate == 0.6, estimand == "surv")
+  md1 <- its$term_level |>
+    filter(method == "mi", rate == 0.6, estimand == "surv")
+  cat(sprintf(
+    "**Moderate sparsity (rate 0.6).** iter = 3 restores near-nominal S(t|x) coverage: %.3f-%.3f across the %d cells (one-step: %.3f-%.3f) -- all within the pre-set +-2pp practical-significance threshold, though the lower end remains statistically below 0.95.\n\n",
+    min(md3$coverage), max(md3$coverage), nrow(md3),
+    min(md1$coverage), max(md1$coverage)
+  ))
+  # sparse gains
+  sg <- its$paired |>
+    filter(method == "mi_iter3", rate == 0.3, estimand == "surv")
+  it5c <- its$term_level |>
+    filter(method == "mi_iter5", estimand == "surv")
+  it5b <- its$pointwise |>
+    filter(method == "mi_iter5", estimand == "surv", t == 1, x == 0)
+  ft <- its$term_level |>
+    filter(estimand == "surv") |>
+    select(cell_id, method, mean_fit_time) |>
+    pivot_wider(names_from = method, values_from = mean_fit_time)
+  cat(sprintf(
+    "**Sparse cells (rate 0.3).** iter = 3 lifts paired S(t|x) coverage by %+.3f to %+.3f; iter = 5 reaches grid-averaged coverage %.3f-%.3f across the 8 cells, with S(1|0) bias %+.3f to %+.3f (vs one-step's up to +0.07). Iteration removes most of the early-time point bias -- decaying roughly geometrically in iter -- and greatly improves coverage, but does not fully restore it in the hardest cells (minimum %.3f at iter 5, still below nominal by more than 2 MC SE). Median fit-time ratios vs one-step: iter 3 %.1fx, iter 5 %.1fx.\n\n",
+    min(sg$diff), max(sg$diff),
+    min(it5c$coverage), max(it5c$coverage),
+    min(it5b$bias), max(it5b$bias),
+    min(it5c$coverage),
+    median(ft$mi_iter3 / ft$mi, na.rm = TRUE),
+    median(ft$mi_iter5 / ft$mi, na.rm = TRUE)
+  ))
+  # what iteration does NOT cure: the hazard estimand under sparse inspection
+  hz5 <- its$term_level |>
+    filter(method == "mi_iter5", estimand == "hazard", baseline == "peaked")
+  orc5 <- tl |>
+    semi_join(hz5, by = "cell_id") |>
+    filter(method == "oracle", estimand == "hazard")
+  cat(sprintf(
+    "**Scope: what iteration does not cure.** The interval-average hazard at peaked baselines under sparse inspection stays sub-nominal even at iter = 5: grid-averaged coverage %.3f-%.3f in the peaked rate-0.3 cells, versus the *oracle's* %.3f-%.3f in the same cells. Unlike the dense-inspection hazard caveat of Fig 1 (a smoothing ceiling the oracle also hits), the sparse-cell residual gap lies *below* the oracle -- here the peak attenuation is genuine information loss from wide intervals, which no imputation scheme can recover. The iter = 3-5 recommendation concerns survival and effect estimands.\n\n",
+    min(hz5$coverage), max(hz5$coverage),
+    min(orc5$coverage), max(orc5$coverage)
+  ))
+  # iteration's own cost: divergent chains in flexible TV models at small n
+  ext_tab <- its$term_level |>
+    filter(n_extreme > 0) |>
+    select(cell_id, method, estimand, n_extreme)
+  lr_tv <- its$term_level |>
+    filter(estimand == "logHR", effect == "tv", n == 300) |>
+    select(cell_id, method, rmse) |>
+    pivot_wider(names_from = method, values_from = rmse)
+  cat(sprintf(
+    "**Iteration's own cost: occasional divergent chains.** In the flexible time-varying-effect models at n = 300, chained re-imputation occasionally amplifies a weakly identified chain instead of damping it: a small fraction of reps develop extreme logHR(t)/hazard estimates -- including one fully degenerate hazard fit at iter = 5, flagged via the n_extreme column (%d flagged summary/-ies) and excluded from moment summaries -- with *no* mgcv warnings. Even after excluding blow-ups, iter-5 logHR RMSE in the sparse TV n=300 cells is %.0f%%-%.0f%% of one-step's -- coverage is protected only because the same chains produce very wide intervals. Under sparse inspection with flexible TV terms and small n, iteration buys survival accuracy at the price of noisier time-varying effect estimates.\n",
+    nrow(ext_tab),
+    100 * min(lr_tv$mi_iter5 / lr_tv$mi, na.rm = TRUE),
+    100 * max(lr_tv$mi_iter5 / lr_tv$mi, na.rm = TRUE)
+  ))
+}
+```
+
+## Which design factors drive performance? (ANOVA meta-models)
+
+To quantify *which* DGP characteristics and method choices drive performance,
+we treat the core factorial as a designed experiment on the cell-level
+summaries and fit ANOVA meta-models with all two-way interactions,
+
+`y ~ (method + baseline + effect + rate + n)^2`,
+
+for each suitable performance measure. The factorial is fully crossed and
+balanced within each method subset, so the sums-of-squares decomposition is
+order-invariant; we report each term's share of total SS (η², in %). One
+observation = one (cell, method) summary, so "Residuals" collects all
+three-way-and-higher interactions plus the Monte Carlo error of the
+cell-level summaries. This is a *descriptive* variance
+decomposition (no inferential F-tests are warranted at n = 1 summary per
+cell × method); ic_par's designed misspecification is part of the design and
+shows up in the method interactions.
+
+```{r anova, results = "asis"}
+core_a <- tl |>
+  filter(arm == "core") |>
+  mutate(
+    method = droplevels(method),
+    baseline = factor(baseline), effect = factor(effect),
+    rate = factor(rate), n = factor(n)
+  )
+or_rmse <- core_a |>
+  filter(method == "oracle", estimand == "surv") |>
+  select(cell_id, rmse_o = rmse)
+ci_methods <- c("oracle", "mi", "midpoint", "ic_par")
+
+dat_list <- list(
+  "coverage S(t|x)" = core_a |>
+    filter(estimand == "surv", method %in% ci_methods) |>
+    mutate(y = coverage),
+  "coverage hazard" = core_a |>
+    filter(estimand == "hazard", method %in% ci_methods) |>
+    mutate(y = coverage),
+  "log RRMSE S(t|x)" = core_a |>
+    filter(estimand == "surv", method != "oracle") |>
+    left_join(or_rmse, by = "cell_id") |>
+    mutate(y = log(rmse / rmse_o)),
+  "log avSE/empSE S(t|x)" = core_a |>
+    filter(estimand == "surv", method %in% ci_methods) |>
+    mutate(y = log(se_ratio))
+)
+eta2_of <- function(d) {
+  d$method <- droplevels(d$method)
+  ss <- summary(
+    stats::aov(y ~ (method + baseline + effect + rate + n)^2, data = d)
+  )[[1]]
+  tibble(term = trimws(rownames(ss)), eta2 = ss[["Sum Sq"]] / sum(ss[["Sum Sq"]]))
+}
+etas <- map(dat_list, eta2_of)
+wide <- reduce(
+  imap(etas, \(e, nm) e |> mutate("{nm}" := round(100 * eta2, 1)) |>
+         select(-eta2)),
+  full_join, by = "term"
+)
+mx <- apply(wide[, -1], 1, max, na.rm = TRUE)
+wide <- bind_rows(
+  wide[wide$term != "Residuals", ][order(-mx[wide$term != "Residuals"]), ],
+  wide[wide$term == "Residuals", ]
+)
+knitr::kable(
+  wide,
+  caption = "Share of total SS (eta-squared, %) per model term, core factorial. Coverage measures: methods with CIs (oracle/mi/midpoint/ic_par); log RRMSE: all non-oracle methods, RMSE relative to the oracle in the same cell."
+)
+```
+
+```{r anova-prose, results = "asis"}
+top_terms <- function(nm, k = 3) {
+  etas[[nm]] |>
+    filter(term != "Residuals") |>
+    slice_max(eta2, n = k) |>
+    (\(d) paste(sprintf("%s (%.0f%%)", d$term, 100 * d$eta2), collapse = ", "))()
+}
+g2 <- function(nm, term) {
+  100 * etas[[nm]]$eta2[etas[[nm]]$term == term]
+}
+sds <- purrr::map_dbl(dat_list, \(d) stats::sd(d$y))
+cat(sprintf(
+  "Total response SDs being decomposed: %s. (Shares of a small total are still small effects: the avSE/empSE column partitions practically negligible variation.)\n\n",
+  paste(sprintf("%s %.3f", names(sds), sds), collapse = "; ")
+))
+for (nm in names(etas)) {
+  cat(sprintf("- **%s**: dominated by %s.\n", nm, top_terms(nm)))
+}
+mi_md_sr <- tl |>
+  filter(arm == "core", estimand == "surv",
+         method %in% c("oracle", "mi", "midpoint", "ic_par")) |>
+  group_by(grp = method %in% c("mi", "ic_par")) |>
+  summarise(med = median(se_ratio), .groups = "drop")
+cat(sprintf(
+  "\n**Interpretation.** *Coverage* differences are overwhelmingly about *which method meets which inspection regime and baseline shape*: for S(t|x), the method main effect plus its rate and baseline interactions carry %.0f%% of the variation (method %.0f%%, method:baseline %.0f%%, method:rate %.0f%%), while all purely-DGP terms together explain only %.0f%% -- a good method is simply robust where a bad one is not. method:baseline is the parametric-misspecification axis (ic_par's Weibull vs the peaked baseline); method:rate is the MI-vs-midpoint sparsity-robustness story of Fig 1. Hazard coverage adds a genuine baseline main effect (%.0f%%): the peaked shape is harder for *everyone*, including the oracle (the smoothing ceiling). *Point accuracy* (log RRMSE vs oracle) is structured differently: inspection rate itself is the largest single term (%.0f%%) -- coarser information costs every method accuracy relative to the oracle -- followed by the misspecification axis method:baseline (%.0f%%), while the method main effect is modest (%.0f%%): apart from parametric misspecification, the IC approaches are closer in accuracy than their coverage gaps suggest. The *avSE/empSE* column has a method term (%.0f%%) but decomposes an SD of just %.3f: a tiny systematic level shift (MI/ic_par median %.2f, midpoint/oracle %.2f) of no practical consequence. S(t|x) SE calibration is thus sound for every method, so its coverage failures are point-estimate-bias failures; bias-eliminated coverage >= %.2f across every core CI-method summary says the same of the dominant failures for the other estimands. (The RRMSE column's method set additionally contains the point-only ic_sp and Turnbull.) Finally, n terms stay <= %.0f%% in every column: with bias-driven failures, more data does not help; it sharpens the interval around the wrong value.\n",
+  g2("coverage S(t|x)", "method") + g2("coverage S(t|x)", "method:rate") +
+    g2("coverage S(t|x)", "method:baseline"),
+  g2("coverage S(t|x)", "method"),
+  g2("coverage S(t|x)", "method:baseline"),
+  g2("coverage S(t|x)", "method:rate"),
+  sum(100 * etas[["coverage S(t|x)"]]$eta2[
+    !grepl("method|Residuals", etas[["coverage S(t|x)"]]$term)
+  ]),
+  g2("coverage hazard", "baseline"),
+  g2("log RRMSE S(t|x)", "rate"),
+  g2("log RRMSE S(t|x)", "method:baseline"),
+  g2("log RRMSE S(t|x)", "method"),
+  g2("log avSE/empSE S(t|x)", "method"),
+  sds[["log avSE/empSE S(t|x)"]],
+  mi_md_sr$med[mi_md_sr$grp], mi_md_sr$med[!mi_md_sr$grp],
+  min(tl$be_coverage[tl$arm == "core" & tl$method %in% ci_methods],
+      na.rm = TRUE),
+  max(purrr::map_dbl(names(etas), \(nm) max(g2(nm, "n"), g2(nm, "method:n"))))
+))
+```
+
+# Conclusions
+
+```{r conclusions, results = "asis"}
+# all numbers recomputed here so this section is self-contained
+mi_dense <- tl |>
+  filter(arm == "core", rate == 1.5, method == "mi",
+         estimand %in% c("surv", "beta", "logHR"))
+ph_mid <- tl |>
+  filter(arm == "core", rate == 0.6, method == "mi", estimand == "surv")
+pd_sp <- paired |>
+  filter(arm == "core", rate == 0.3, estimand %in% c("surv", "hazard"))
+mi_sp_n <- tl |>
+  filter(arm == "core", rate == 0.3, effect == "ph", estimand == "surv",
+         method == "mi")
+icp_const <- tl |>
+  filter(arm == "core", baseline == "const", effect == "ph",
+         method == "ic_par", estimand == "surv")
+icp_peak <- tl |>
+  filter(arm == "core", baseline == "peaked", method == "ic_par",
+         estimand == "surv")
+cr_rng <- range(
+  tl$coverage[tl$arm %in% c("cr", "cr_unknown") & tl$method == "mi"],
+  na.rm = TRUE
+)
+rr_c <- tl |>
+  filter(arm == "core", estimand == "surv") |>
+  left_join(
+    tl |>
+      filter(arm == "core", estimand == "surv", method == "oracle") |>
+      select(cell_id, rmse_o = rmse),
+    by = "cell_id"
+  ) |>
+  mutate(rrmse = rmse / rmse_o)
+rr_med <- rr_c |>
+  filter(method %in% c("mi", "midpoint", "turnbull")) |>
+  group_by(method) |>
+  summarise(m = median(rrmse), .groups = "drop")
+rrm <- function(x) rr_med$m[rr_med$method == x]
+tb_v_mi <- rr_c |>
+  select(cell_id, method, rrmse) |>
+  pivot_wider(names_from = method, values_from = rrmse) |>
+  summarise(v = sum(turnbull < mi, na.rm = TRUE), n = sum(!is.na(turnbull)))
+# extension sentences (computed if the iterated-MI summary is available)
+if (has_iter) {
+  sg_c <- its$paired |>
+    filter(method == "mi_iter3", rate == 0.3, estimand == "surv")
+  it5b_c <- its$pointwise |>
+    filter(method == "mi_iter5", estimand == "surv", t == 1, x == 0)
+  it5cov_c <- its$term_level |>
+    filter(method == "mi_iter5", estimand == "surv")
+  ext3 <- sprintf(
+    "The iterated-MI extension (Fig 7) confirms the diagnosis on the same data: chained re-imputation with iter = 3 lifts sparse-cell S(t|x) coverage by up to %+.2f (paired), and iter = 5 shrinks S(1|0) bias to within %+.3f of zero in every rate-0.3 cell, with coverage %.2f-%.2f -- for S(t|x), the bias was dominated by initialisation, not missing information (the hardest cells retain a small residual shortfall; the sparse peaked-cell *hazard* gap, by contrast, IS information loss and survives iteration, Fig 7).",
+    max(sg_c$diff), max(abs(it5b_c$bias)),
+    min(it5cov_c$coverage), max(it5cov_c$coverage)
+  )
+  ext5 <- "For sparse panels, set iter = 3-5 in pamm_ic for survival and effect estimands (roughly linear fit-cost in iter; Fig 7) instead of accepting optimistic early-time survival estimates -- but mind Fig 7's two caveats: sparse peaked-baseline hazards stay sub-oracle regardless of iter, and with flexible time-varying terms at small n, iteration occasionally produces divergent, very-wide-CI chains."
+} else {
+  ext3 <- "This motivates the iterated (refit-and-reimpute) extension scoped in the README."
+  ext5 <- "With sparser panels still, treat early-time S(t|x) point estimates as optimistic."
+}
+cat(sprintf(
+"1. **The MI workflow is valid where its imputation model has enough to work with.** Under dense inspection (mean gap 0.67) MI attains %.3f-%.3f coverage across survival, beta and logHR(t) in every core cell; at moderate sparsity (mean gap 1.7) survival coverage is still %.3f-%.3f. Competing-risks CIFs and cause-specific effects stay at %.2f-%.2f (incl. with 30%% masked causes), smooth f(x) tracks the oracle, and results are insensitive to m in {5, 10, 20}.
+
+2. **MI clearly beats the naive midpoint default** -- the comparison that matters for practice, since midpoint imputation is what people actually do. Under sparse inspection the paired coverage gain for S/hazard is %+.3f to %+.3f (paired MC SE <= %.3f), and midpoint is never significantly better on any estimand anywhere. The mechanism is fully diagnosed: midpoint discards imputation uncertainty (too-narrow CIs, Fig 4) around structurally biased point estimates; MI propagates the uncertainty and partly de-biases.
+
+3. **The honest limitation of one-step MI -- and its cure.** With mean inspection gaps of ~3.3, one-step MI's point estimates inherit bias from the midpoint-initialized imputation fit, concentrated at early-to-mid t; SEs stay honest (be_coverage nominal, se_ratio ~ 1), so coverage *falls as n grows* (const-ph: %.3f at n=300 vs %.3f at n=1000) -- and Turnbull recovers S(1) on the same data. %s
+
+4. **External comparators behave exactly as theory says.** ic_par is nominal wherever its Weibull is correct (const cells: %.3f-%.3f at every rate, n) and fails under the peaked baseline (%.3f-%.3f) with no rescue from n -- the cost of parametric convenience. On S(t|x) point accuracy MI leads the non-oracle field (median RRMSE vs oracle: MI %.2f, midpoint %.2f, Turnbull %.2f; Turnbull beats MI in only %d/%d core cells): the Turnbull NPMLE remains the assumption-free point-only reference, but buys no smoothing, no covariate model and no CIs, while MI alone provides full regression inference.
+
+5. **Practical guidance.** Under dense inspection (mean gap <= ~0.7 on this 10-unit horizon) pamm_ic inference can be used as-is (default iter = 1) for all estimands except the interval-average hazard near sharp peaks (a smoothing, not an IC, limitation -- the oracle hits the same ceiling). Already at moderate sparsity (mean gap ~1.7) the early-time bias begins to show with the default: survival coverage dips to %.3f in the worst core cell (large n, bias-driven) even though effect estimates stay reliable. %s Effect estimates (beta, logHR(t), f(x)) remain trustworthy longer than survival curves do.
+
+6. **Methodological note.** The three-gate review process earned its keep: the final gate caught an informative-censoring defect in the inspection DGP (decision log, 2026-06-11) precisely because the design included a *well-specified parametric comparator* whose coverage collapse could only mean a data-generation bug. Production was re-run on the corrected DGP; the pre-fix archive is retained for the paired comparison.\n",
+  min(mi_dense$coverage), max(mi_dense$coverage),
+  min(ph_mid$coverage), max(ph_mid$coverage),
+  cr_rng[1], cr_rng[2],
+  min(pd_sp$diff), max(pd_sp$diff), max(pd_sp$diff_mcse),
+  mi_sp_n$coverage[mi_sp_n$n == 300], mi_sp_n$coverage[mi_sp_n$n == 1000],
+  ext3,
+  min(icp_const$coverage), max(icp_const$coverage),
+  min(icp_peak$coverage), max(icp_peak$coverage),
+  rrm("mi"), rrm("midpoint"), rrm("turnbull"), tb_v_mi$v, tb_v_mi$n,
+  min(ph_mid$coverage),
+  ext5
+))
+```
+
+# Appendix
+
+## A1: Term-level summary tables
+
+Full per-cell reference tables, one block per estimand: coverage (MC SE),
+bias-eliminated coverage, bias (MC SE), RMSE (MC SE), avSE/empSE and median
+CI width per (cell, method). Use them to look up any individual cell behind
+the figures; the patterns are summarized in the Results section and the ANOVA
+table above.
+
+```{r tables, results = "asis"}
+for (es in unique(tl$estimand)) {
+  cat(sprintf("\n### %s\n\n", es))
+  print(knitr::kable(
+    tl |>
+      filter(estimand == es) |>
+      mutate(
+        coverage = sprintf("%.3f (%.3f)", coverage, coverage_mcse),
+        bias = sprintf("%.4f (%.4f)", bias, bias_mcse),
+        rmse = sprintf("%.4f (%.4f)", rmse, rmse_mcse)
+      ) |>
+      select(cell_id, method, n_rep, coverage, be_coverage, bias, rmse,
+             se_ratio, median_width, misspecified),
+    digits = 3
+  ))
+}
+```
+
+## A2: Session / run metadata
+
+```{r meta, results = "asis"}
+cat(sprintf("- raw rows: %d\n", res$n_raw_rows))
+cat(sprintf("- max reps/cell: %d\n", n_rep_prod))
+cat(sprintf("- median fit times by method (s): %s\n",
+  tl |> group_by(method) |> summarise(t = median(mean_fit_time, na.rm = TRUE)) |>
+    (\(d) paste(sprintf("%s %.1f", d$method, d$t), collapse = ", "))()
+))
+```
