@@ -64,7 +64,7 @@ silently incorrect results, as the transition probability will be accumulated
 over the entire dataset rather than within each group.
 }
 \examples{
-\dontshow{if (require("mstate")) (if (getRversion() >= "3.4") withAutoprint else force)(\{ # examplesIf}
+\dontshow{if (require("mstate")) withAutoprint(\{ # examplesIf}
   data("prothr", package = "mstate")
   prothr <- prothr |>
     mutate(transition = as.factor(paste0(from, "->", to))
